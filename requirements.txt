@@ -1,0 +1,24 @@
+# Dependencias para el sistema RAG con Gemini y Qdrant Cloud
+
+# Qdrant client para base de datos vectorial (Cloud)
+qdrant-client==1.18.0
+
+# Google Gemini API
+google-generativeai>=0.4.0
+
+# Procesamiento de imágenes
+Pillow>=10.3.0
+
+# API y servidor web
+Flask==2.3.3
+Flask-CORS==4.0.0
+
+# Utilidades
+numpy>=1.26.3
+requests==2.31.0
+python-dotenv==1.0.0
+
+# Para desarrollo (opcional)
+pytest>=7.4.2
+black>=23.9.1
+flake8>=6.1.0

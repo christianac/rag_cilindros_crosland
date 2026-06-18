@@ -1,0 +1,284 @@
+{
+  "name": "Cylinder Image RAG Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upload-cylinder-image",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "Webhook - Receive Image",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "cylinder-upload"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer y validar datos de entrada\nconst inputData = $input.all();\nconst webhookData = inputData[0].json;\n\n// Validar campos requeridos\nif (!webhookData.image_base64) {\n  throw new Error('Campo image_base64 es requerido');\n}\n\nif (!webhookData.cylinder_condition) {\n  throw new Error('Campo cylinder_condition es requerido');\n}\n\nif (!['correct', 'dented', 'false_positive'].includes(webhookData.cylinder_condition)) {\n  throw new Error('cylinder_condition debe ser: correct, dented, o false_positive');\n}\n\n// Preparar datos para procesamiento\nconst processedData = {\n  image_data: webhookData.image_base64,\n  cylinder_condition: webhookData.cylinder_condition,\n  confidence_score: webhookData.confidence_score || 1.0,\n  source_info: {\n    upload_time: new Date().toISOString(),\n    source_ip: webhookData.source_ip || 'unknown',\n    user_agent: webhookData.user_agent || 'unknown'\n  }\n};\n\nreturn processedData;"
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5000/process-image",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "image_data",
+              "value": "={{ $json.image_data }}"
+            },
+            {
+              "name": "cylinder_condition",
+              "value": "={{ $json.cylinder_condition }}"
+            },
+            {
+              "name": "confidence_score",
+              "value": "={{ $json.confidence_score }}"
+            },
+            {
+              "name": "source_info",
+              "value": "={{ $json.source_info }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "process-image",
+      "name": "Process Image with RAG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "success-condition",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-success",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5000/classify-image",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "image_data",
+              "value": "={{ $('Validate Input').item.json.image_data }}"
+            }
+          ]
+        }
+      },
+      "id": "classify-image",
+      "name": "Classify Similar Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Preparar respuesta exitosa\nconst inputItem = $input.all()[0].json;\nconst classificationResult = $('Classify Similar Images').first().json;\n\nconst response = {\n  status: 'success',\n  message: 'Imagen procesada y almacenada exitosamente',\n  data: {\n    point_id: inputItem.point_id,\n    cylinder_condition: $('Validate Input').first().json.cylinder_condition,\n    confidence_score: $('Validate Input').first().json.confidence_score,\n    classification: classificationResult,\n    timestamp: new Date().toISOString()\n  }\n};\n\nreturn response;"
+      },
+      "id": "success-response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Preparar respuesta de error\nconst inputItem = $input.all()[0].json;\n\nconst response = {\n  status: 'error',\n  message: 'Error procesando imagen',\n  error: inputItem.error || 'Error desconocido',\n  timestamp: new Date().toISOString()\n};\n\nreturn response;"
+      },
+      "id": "error-response",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 440]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 160]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1340, 440]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - Receive Image": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Process Image with RAG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Image with RAG": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Classify Similar Images",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Similar Images": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cylinder-rag-instance"
+  },
+  "id": "cylinder-image-rag-pipeline",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "image-processing",
+      "name": "Image Processing"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z", 
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "rag",
+      "name": "RAG"
+    }
+  ]
+}
