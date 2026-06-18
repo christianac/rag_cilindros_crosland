@@ -595,8 +595,8 @@ def page_status():
         - **Modo actual:** `{client.kind}`
         - **API URL:** `{api_url}`
         - **SDK Gemini:** `google-genai`
-        - **Modelos:** `gemini-2.5-flash` (visión) · `text-embedding-004` (embeddings)
-        - **Vector size:** 768
+        - **Modelos:** `gemini-2.5-flash` (visión) · `gemini-embedding-2` (embeddings)
+        - **Vector size:** 3072
 
         **Atajos:**
         - `Ctrl+R` / `Cmd+R` → recargar la página

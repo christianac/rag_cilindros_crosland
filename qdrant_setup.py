@@ -4,7 +4,7 @@ Script de inicialización para base de datos Qdrant RAG
 Especializado en clasificación de imágenes de cilindros
 Configurado para usar Qdrant Cloud (servicio en línea)
 
-Vector size: 768 dimensiones (text-embedding-004 de Google Gemini)
+Vector size: 3072 dimensiones (gemini-embedding-2 de Google Gemini)
 """
 
 import os
@@ -37,9 +37,10 @@ class QdrantCylinderDB:
             port: Puerto de Qdrant local (alternativa)
         """
         self.collection_name = "cylinder_images"
-        # Dimensión oficial de text-embedding-004 (Google Gemini)
-        # Referencia: https://ai.google.dev/gemini-api/docs/models#text-embedding
-        self.vector_size = 768
+        # Dimensión de gemini-embedding-2 (modelo multimodal, el disponible en la API)
+        # Nombres válidos: models/gemini-embedding-2, models/gemini-embedding-001
+        # text-embedding-004 NO está disponible en google-genai SDK v2
+        self.vector_size = 3072
         
         # Priorizar Qdrant Cloud si se proporciona URL
         self.cloud_url = cloud_url or os.getenv("QDRANT_CLOUD_URL")
@@ -206,7 +207,7 @@ def main():
         else:
             print(f"  - Tipo: Qdrant local")
         print(f"  - Dimensión de vector: {db.vector_size} "
-              f"(text-embedding-004 · google-genai SDK)")
+              f"(gemini-embedding-2 · google-genai SDK)")
 
         print("\nEstructura de metadatos que se utilizará:")
         print("  - cylinder_condition:  'correct' | 'dented' | 'false_positive'")
@@ -215,7 +216,7 @@ def main():
         print("  - source:              origen del dato (n8n, manual, training…)")
         print("  - verified:            si fue verificado por un humano")
         print("  - description:         descripción generada por gemini-2.5-flash")
-        print("  - embedding_model:     text-embedding-004")
+        print("  - embedding_model:     models/gemini-embedding-2")
         print("  - vision_model:        gemini-2.5-flash")
         
         return True

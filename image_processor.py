@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Procesador de imágenes para base de datos RAG de cilindros
-Usa google-genai SDK (nueva) + gemini-2.5-flash + text-embedding-004
+Usa google-genai SDK (nueva) + gemini-2.5-flash + gemini-embedding-2
 """
 
 import os
@@ -26,9 +26,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Dimensión oficial de text-embedding-004
-EMBEDDING_DIM = 768
-EMBEDDING_MODEL = "text-embedding-004"
+# Dimensión de gemini-embedding-2 (modelo multimodal Google, output por defecto)
+EMBEDDING_DIM   = 3072
+EMBEDDING_MODEL = "models/gemini-embedding-2"
 VISION_MODEL    = "gemini-2.5-flash"
 
 
@@ -63,7 +63,8 @@ class CylinderImageProcessor:
             )
         self.client = genai.Client(api_key=api_key)
         logger.info(f"Cliente Gemini inicializado | visión: {VISION_MODEL} | "
-                    f"embeddings: {EMBEDDING_MODEL} ({EMBEDDING_DIM}d)")
+                    f"embeddings: {EMBEDDING_MODEL} ({EMBEDDING_DIM}d) | "
+                    f"SDK: google-genai v2")
 
         # ── Qdrant (priorizar Cloud) ───────────────────────────────────────
         self.qdrant_cloud_url = qdrant_cloud_url or os.getenv("QDRANT_CLOUD_URL")
@@ -151,7 +152,7 @@ class CylinderImageProcessor:
 
     def generate_embedding(self, text: str) -> np.ndarray:
         """
-        Generar embedding de 768 dimensiones con text-embedding-004.
+        Generar embedding de 3072 dimensiones con gemini-embedding-2.
 
         Usa client.models.embed_content() según la nueva SDK.
         """
@@ -184,7 +185,7 @@ class CylinderImageProcessor:
         Pipeline completo: imagen → descripción (Gemini Vision) → embedding.
 
         Returns:
-            (embedding np.ndarray 768d, descripción str)
+            (embedding np.ndarray 3072d, descripción str)
         """
         logger.info("Paso 1/2 → Gemini Vision: generando descripción...")
         description = self.get_image_description(image)

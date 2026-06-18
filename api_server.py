@@ -3,7 +3,7 @@
 API Server para conectar n8n con el procesador de imágenes RAG
 SDK:    google-genai (nueva)
 Visión: gemini-2.5-flash
-Embed:  text-embedding-004 (768d)
+Embed:  gemini-embedding-2 (3072d)
 DB:     Qdrant Cloud
 """
 
@@ -33,7 +33,7 @@ try:
         qdrant_cloud_url=os.getenv("QDRANT_CLOUD_URL"),
         qdrant_api_key=os.getenv("QDRANT_API_KEY")
     )
-    logger.info("Procesador inicializado | gemini-2.5-flash + text-embedding-004 + Qdrant Cloud")
+    logger.info("Procesador inicializado | gemini-2.5-flash + gemini-embedding-2 (3072d) + Qdrant Cloud")
 except Exception as e:
     logger.error(f"Error inicializando procesador: {e}")
     processor = None
