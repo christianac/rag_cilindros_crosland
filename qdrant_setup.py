@@ -3,16 +3,15 @@
 Script de inicialización para base de datos Qdrant RAG
 Especializado en clasificación de imágenes de cilindros
 Configurado para usar Qdrant Cloud (servicio en línea)
+
+Vector size: 768 dimensiones (text-embedding-004 de Google Gemini)
 """
 
 import os
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
-from qdrant_client.http.exceptions import UnexpectedResponse
-import requests
-import json
+from qdrant_client.models import Distance, VectorParams
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -38,9 +37,9 @@ class QdrantCylinderDB:
             port: Puerto de Qdrant local (alternativa)
         """
         self.collection_name = "cylinder_images"
-        # Tamaño de vector para embeddings de Gemini (text-embedding-004)
-        # o modelos multimodales de Gemini
-        self.vector_size = 768  # Dimensión estándar para embeddings Gemini
+        # Dimensión oficial de text-embedding-004 (Google Gemini)
+        # Referencia: https://ai.google.dev/gemini-api/docs/models#text-embedding
+        self.vector_size = 768
         
         # Priorizar Qdrant Cloud si se proporciona URL
         self.cloud_url = cloud_url or os.getenv("QDRANT_CLOUD_URL")
@@ -206,15 +205,18 @@ def main():
             print(f"  - URL: {QDRANT_CLOUD_URL}")
         else:
             print(f"  - Tipo: Qdrant local")
-        print(f"  - Dimensión de vector: {db.vector_size} (compatible con Gemini)")
-        
+        print(f"  - Dimensión de vector: {db.vector_size} "
+              f"(text-embedding-004 · google-genai SDK)")
+
         print("\nEstructura de metadatos que se utilizará:")
-        print("  - cylinder_condition: 'correct' | 'dented' | 'false_positive'")
-        print("  - confidence_score: puntuación de confianza")
-        print("  - upload_timestamp: timestamp de subida")
-        print("  - source: fuente de la imagen (n8n, manual, etc.)")
-        print("  - verified: si ha sido verificado por humano")
-        print("  - description: descripción generada por Gemini")
+        print("  - cylinder_condition:  'correct' | 'dented' | 'false_positive'")
+        print("  - confidence_score:    puntuación de confianza (0.0 – 1.0)")
+        print("  - upload_timestamp:    timestamp de subida")
+        print("  - source:              origen del dato (n8n, manual, training…)")
+        print("  - verified:            si fue verificado por un humano")
+        print("  - description:         descripción generada por gemini-2.5-flash")
+        print("  - embedding_model:     text-embedding-004")
+        print("  - vision_model:        gemini-2.5-flash")
         
         return True
         

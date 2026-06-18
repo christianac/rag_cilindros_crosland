@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 API Server para conectar n8n con el procesador de imágenes RAG
-Usa Google Gemini para embeddings y Qdrant Cloud para almacenamiento
+SDK:    google-genai (nueva)
+Visión: gemini-2.5-flash
+Embed:  text-embedding-004 (768d)
+DB:     Qdrant Cloud
 """
 
 import os
@@ -30,7 +33,7 @@ try:
         qdrant_cloud_url=os.getenv("QDRANT_CLOUD_URL"),
         qdrant_api_key=os.getenv("QDRANT_API_KEY")
     )
-    logger.info("Procesador de imágenes inicializado con Gemini y Qdrant Cloud")
+    logger.info("Procesador inicializado | gemini-2.5-flash + text-embedding-004 + Qdrant Cloud")
 except Exception as e:
     logger.error(f"Error inicializando procesador: {e}")
     processor = None
@@ -47,15 +50,16 @@ def health_check():
     
     # Verificar configuración
     config_info = {
-        "qdrant_type": "cloud" if processor.qdrant_cloud_url else "local",
+        "qdrant_type":     "cloud" if processor.qdrant_cloud_url else "local",
         "embedding_model": processor.embedding_model,
-        "vision_model": "gemini-1.5-flash",
-        "vector_size": processor.vector_size
+        "vision_model":    processor.vision_model_id,
+        "vector_size":     processor.vector_size,
+        "sdk":             "google-genai",
     }
-    
+
     return jsonify({
         "status": "healthy",
-        "message": "API funcionando correctamente con Gemini",
+        "message": "API funcionando con google-genai SDK + gemini-2.5-flash",
         "config": config_info,
         "endpoints": [
             "/process-image",
@@ -133,7 +137,8 @@ def process_image():
             "message": "Imagen procesada y almacenada exitosamente con Gemini",
             "cylinder_condition": cylinder_condition,
             "confidence_score": confidence_score,
-            "embedding_model": "Gemini text-embedding-004"
+            "embedding_model": processor.embedding_model,
+            "vision_model":    processor.vision_model_id,
         })
         
     except Exception as e:
@@ -180,9 +185,9 @@ def classify_image():
         logger.info(f"Imagen clasificada con Gemini: {classification_result['predicted_condition']}")
         
         return jsonify({
-            "success": True,
+            "success":    True,
             "classification": classification_result,
-            "model_used": "gemini-1.5-flash"
+            "model_used": processor.vision_model_id,
         })
         
     except Exception as e:
@@ -238,7 +243,7 @@ def search_similar():
             "success": True,
             "similar_images": similar_images,
             "count": len(similar_images),
-            "model_used": "gemini-1.5-flash + text-embedding-004"
+            "model_used": f"{processor.vision_model_id} + {processor.embedding_model}"
         })
         
     except Exception as e:
@@ -262,7 +267,8 @@ def get_stats():
             "indexed_vectors": collection_info.indexed_vectors_count,
             "qdrant_type": "cloud" if processor.qdrant_cloud_url else "local",
             "embedding_model": processor.embedding_model,
-            "vision_model": "gemini-1.5-flash"
+            "vision_model":    processor.vision_model_id,
+            "sdk":             "google-genai"
         }
         
         return jsonify({
