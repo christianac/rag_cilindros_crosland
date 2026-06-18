@@ -61,10 +61,14 @@ class CylinderImageProcessor:
                 "GEMINI_API_KEY es requerido. "
                 "Obtén una en https://aistudio.google.com/app/apikey"
             )
-        self.client = genai.Client(api_key=api_key)
+        # http_options fuerza v1 en lugar de v1beta para mayor compatibilidad
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version="v1")
+        )
         logger.info(f"Cliente Gemini inicializado | visión: {VISION_MODEL} | "
                     f"embeddings: {EMBEDDING_MODEL} ({EMBEDDING_DIM}d) | "
-                    f"SDK: google-genai v2")
+                    f"SDK: google-genai v2 | API: v1")
 
         # ── Qdrant (priorizar Cloud) ───────────────────────────────────────
         self.qdrant_cloud_url = qdrant_cloud_url or os.getenv("QDRANT_CLOUD_URL")
