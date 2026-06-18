@@ -14,9 +14,13 @@ Pillow>=10.3.0
 Flask>=2.3.3
 Flask-CORS>=4.0.0
 
+# Interfaz gráfica
+streamlit>=1.30.0
+
 # Utilidades
 numpy>=1.26.3
 python-dotenv>=1.0.0
+requests>=2.31.0
 
 # Para desarrollo (opcional)
 pytest>=7.4.2
