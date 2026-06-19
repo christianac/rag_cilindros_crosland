@@ -138,7 +138,8 @@ def process_image():
     }
     """
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Validar datos de entrada
@@ -229,7 +230,8 @@ def classify_image():
     }
     """
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Validar datos de entrada
@@ -286,7 +288,8 @@ def search_similar():
     }
     """
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Validar datos de entrada
@@ -338,7 +341,8 @@ def search_similar():
 def get_stats():
     """Obtener estadísticas de la base de datos"""
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Obtener información de la colección
