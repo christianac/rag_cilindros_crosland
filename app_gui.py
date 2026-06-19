@@ -74,20 +74,79 @@ class _ApiClient:
     def _encode(self, file_bytes: bytes) -> str:
         return base64.b64encode(file_bytes).decode("utf-8")
 
+    def _record_debug(self, method: str, full_url: str,
+                      body: Optional[Dict[str, Any]] = None,
+                      response: Optional[Dict[str, Any]] = None,
+                      status_code: int = 0,
+                      error: Optional[str] = None) -> None:
+        """Guarda el último request/response en session_state para el panel de debug."""
+        try:
+            import streamlit as st
+            # Hacer el body más legible: no incluir el base64 gigante
+            body_display = None
+            if body:
+                body_display = {k: ("<base64 image>" if k == "image_data" else v)
+                                for k, v in body.items()}
+            entry = {
+                "timestamp":   datetime.now().isoformat(timespec="seconds"),
+                "method":      method,
+                "url":         full_url,
+                "status_code": status_code,
+                "body":        body_display,
+                "response":    response,
+                "error":       error,
+            }
+            if "debug_log" not in st.session_state:
+                st.session_state["debug_log"] = []
+            st.session_state["debug_log"].append(entry)
+            # Mantener solo los últimos 20
+            st.session_state["debug_log"] = st.session_state["debug_log"][-20:]
+        except Exception:
+            # Si Streamlit no está disponible (modo script), ignorar
+            pass
+
     def _get(self, path: str) -> Dict[str, Any]:
-        r = requests.get(f"{self.url}{path}", timeout=60)
-        r.raise_for_status()
-        return r.json()
+        full_url = f"{self.url}{path}"
+        try:
+            r = requests.get(full_url, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            self._record_debug("GET", full_url,
+                               body=None, response=data,
+                               status_code=r.status_code)
+            return data
+        except Exception as e:
+            self._record_debug("GET", full_url,
+                               body=None, response=None,
+                               status_code=0, error=str(e))
+            raise
 
     def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        r = requests.post(f"{self.url}{path}", json=body, timeout=120)
-        if r.status_code >= 400:
-            try:
-                err = r.json()
-            except Exception:
-                err = {"error": r.text}
-            raise RuntimeError(err.get("error") or err)
-        return r.json()
+        full_url = f"{self.url}{path}"
+        try:
+            r = requests.post(full_url, json=body, timeout=120)
+            if r.status_code >= 400:
+                try:
+                    err = r.json()
+                except Exception:
+                    err = {"error": r.text}
+                self._record_debug("POST", full_url,
+                                   body=body, response=err,
+                                   status_code=r.status_code,
+                                   error=str(err.get("error", err)))
+                raise RuntimeError(err.get("error") or err)
+            data = r.json()
+            self._record_debug("POST", full_url,
+                               body=body, response=data,
+                               status_code=r.status_code)
+            return data
+        except RuntimeError:
+            raise
+        except Exception as e:
+            self._record_debug("POST", full_url,
+                               body=body, response=None,
+                               status_code=0, error=str(e))
+            raise
 
     def health(self)   -> Dict[str, Any]: return self._get("/health")
     def stats(self)    -> Dict[str, Any]: return self._get("/stats")["stats"]
@@ -157,8 +216,34 @@ class _DirectClient:
         self.proc = proc
         self.kind = "direct"
 
+    def _record_debug(self, label: str, body: Optional[Dict[str, Any]] = None,
+                      response: Optional[Dict[str, Any]] = None,
+                      error: Optional[str] = None) -> None:
+        """En modo directo no hay URL real, registramos el endpoint 'simulado'."""
+        try:
+            import streamlit as st
+            body_display = None
+            if body:
+                body_display = {k: ("<PIL image>" if k == "image_data" else v)
+                                for k, v in body.items()}
+            entry = {
+                "timestamp":   datetime.now().isoformat(timespec="seconds"),
+                "method":      "DIRECT",
+                "url":         f"[direct] {label}",
+                "status_code": 200 if response else 0,
+                "body":        body_display,
+                "response":    response,
+                "error":       error,
+            }
+            if "debug_log" not in st.session_state:
+                st.session_state["debug_log"] = []
+            st.session_state["debug_log"].append(entry)
+            st.session_state["debug_log"] = st.session_state["debug_log"][-20:]
+        except Exception:
+            pass
+
     def health(self) -> Dict[str, Any]:
-        return {
+        result = {
             "status": "healthy",
             "config": {
                 "qdrant_type":     "cloud" if self.proc.qdrant_cloud_url else "local",
@@ -168,10 +253,12 @@ class _DirectClient:
                 "sdk":             "google-genai",
             }
         }
+        self._record_debug("health", response=result)
+        return result
 
     def stats(self) -> Dict[str, Any]:
         info = self.proc.qdrant_client.get_collection(self.proc.collection_name)
-        return {
+        result = {
             "total_images":    info.points_count,
             "vector_size":     info.config.params.vectors.size,
             "distance":        str(info.config.params.vectors.distance),
@@ -181,6 +268,8 @@ class _DirectClient:
             "vision_model":    self.proc.vision_model_id,
             "sdk":             "google-genai",
         }
+        self._record_debug("stats", response=result)
+        return result
 
     def upload(self, file_bytes: bytes, condition: str,
                confidence: float, verified: bool,
@@ -191,30 +280,56 @@ class _DirectClient:
                expected_code: Optional[str] = None,
                training_type: str = "cylinder") -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        result = self.proc.upload_image(
-            image=pil, cylinder_condition=condition,
-            confidence_score=confidence, source="gui", verified=verified,
-            system_instruction=system_instruction,
-            user_prompt=user_prompt,
-            reason=reason,
-            temperature=temperature,
-            expected_code=expected_code,
-            training_type=training_type,
-        )
-        return {"success": True, **result}
+        try:
+            result = self.proc.upload_image(
+                image=pil, cylinder_condition=condition,
+                confidence_score=confidence, source="gui", verified=verified,
+                system_instruction=system_instruction,
+                user_prompt=user_prompt,
+                reason=reason,
+                temperature=temperature,
+                expected_code=expected_code,
+                training_type=training_type,
+            )
+            self._record_debug(
+                "upload",
+                body={"training_type": training_type,
+                      "cylinder_condition": condition,
+                      "confidence_score": confidence,
+                      "expected_code": expected_code,
+                      "reason": reason,
+                      "temperature": temperature,
+                      "system_instruction": system_instruction},
+                response={"success": True, **result},
+            )
+            return {"success": True, **result}
+        except Exception as e:
+            self._record_debug("upload", error=str(e))
+            raise
 
     def classify(self, file_bytes: bytes, threshold: float,
                  system_instruction: Optional[str] = None,
                  user_prompt: Optional[str] = None,
                  temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        result = self.proc.classify_cylinder(
-            image=pil, confidence_threshold=threshold,
-            system_instruction=system_instruction,
-            user_prompt=user_prompt,
-            temperature=temperature,
-        )
-        return {"success": True, "classification": result}
+        try:
+            result = self.proc.classify_cylinder(
+                image=pil, confidence_threshold=threshold,
+                system_instruction=system_instruction,
+                user_prompt=user_prompt,
+                temperature=temperature,
+            )
+            self._record_debug(
+                "classify",
+                body={"confidence_threshold": threshold,
+                      "temperature": temperature,
+                      "system_instruction": system_instruction},
+                response={"success": True, "classification": result},
+            )
+            return {"success": True, "classification": result}
+        except Exception as e:
+            self._record_debug("classify", error=str(e))
+            raise
 
     def search(self, file_bytes: bytes, limit: int,
                threshold: float, filter_cond: Optional[str],
@@ -222,14 +337,31 @@ class _DirectClient:
                user_prompt: Optional[str] = None,
                temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        hits = self.proc.search_similar_images(
-            query_image=pil, limit=limit,
-            score_threshold=threshold, filter_condition=filter_cond,
-            system_instruction=system_instruction,
-            user_prompt=user_prompt,
-            temperature=temperature,
-        )
-        return {"success": True, "similar_images": hits, "count": len(hits)}
+        try:
+            hits = self.proc.search_similar_images(
+                query_image=pil, limit=limit,
+                score_threshold=threshold, filter_condition=filter_cond,
+                system_instruction=system_instruction,
+                user_prompt=user_prompt,
+                temperature=temperature,
+            )
+            self._record_debug(
+                "search",
+                body={"limit": limit, "score_threshold": threshold,
+                      "filter_condition": filter_cond,
+                      "system_instruction": system_instruction,
+                      "temperature": temperature},
+                response={"success": True,
+                          "count": len(hits),
+                          "similar_images": [
+                              {"id": h["id"], "score": h["score"],
+                               "condition": h["metadata"].get("cylinder_condition")}
+                              for h in hits[:5]]},
+            )
+            return {"success": True, "similar_images": hits, "count": len(hits)}
+        except Exception as e:
+            self._record_debug("search", error=str(e))
+            raise
 
 
 # ── Estilos CSS ──────────────────────────────────────────────────────────────
@@ -968,6 +1100,100 @@ def page_status():
     """)
 
 
+# ── Panel de debug (URL / body / respuesta de la API) ────────────────────────
+
+def render_debug_panel() -> None:
+    """
+    Muestra al final de cada página el último request/response hecho a la API.
+    Usa session_state["debug_log"] donde los clientes van guardando cada llamada.
+    """
+    log = st.session_state.get("debug_log", [])
+    if not log:
+        st.markdown(
+            "<div style='text-align:center; color:#64748b; padding:1rem;'>"
+            "🔍 Aún no se han hecho llamadas a la API en esta sesión"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown("---")
+    st.markdown("## 🔧 Panel de debug — Llamadas a la API")
+    st.caption(f"Mostrando las últimas **{len(log)}** llamadas (máx. 20)")
+
+    # Selector: ver una llamada específica o todas
+    options = [
+        f"#{i+1}  {e['timestamp']}  {e['method']}  {e['url']}"
+        for i, e in enumerate(reversed(log))
+    ]
+    # El primero en options es el más reciente
+    selected = st.selectbox(
+        "Selecciona una llamada para inspeccionar",
+        options=options,
+        index=0,
+        key=f"debug_select_{page}",
+    )
+
+    # Recuperar la entrada seleccionada
+    idx = len(log) - options.index(selected) - 1
+    entry = log[idx]
+
+    # Cabecera con método, URL y status
+    status_color = "#10b981" if 200 <= entry["status_code"] < 300 else (
+        "#f59e0b" if entry["status_code"] == 0 else "#ef4444"
+    )
+    status_text = (
+        f"HTTP {entry['status_code']}" if entry["status_code"]
+        else ("⚠ Error" if entry["error"] else "—")
+    )
+    st.markdown(f"""
+        <div style="background:#0f172a; padding:1rem; border-radius:0.5rem;
+                    border:1px solid #1e293b; margin-bottom:1rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <code style="color:#60a5fa; font-size:1.05rem;">
+                    {entry['method']} {entry['url']}
+                </code>
+                <span style="background:{status_color}; color:white;
+                             padding:0.2rem 0.7rem; border-radius:0.3rem;
+                             font-weight:600;">
+                    {status_text}
+                </span>
+            </div>
+            <div style="margin-top:0.4rem; color:#94a3b8; font-size:0.85rem;">
+                🕐 {entry['timestamp']}
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Tabs: Body / Response / Error
+    tab_body, tab_resp, tab_error = st.tabs(
+        ["📤 Body (request)", "📥 Response", "⚠️ Error"]
+    )
+
+    with tab_body:
+        if entry["body"]:
+            st.json(entry["body"])
+        else:
+            st.info("Esta llamada no envió body (GET o request vacío)")
+
+    with tab_resp:
+        if entry["response"] is not None:
+            st.json(entry["response"])
+        else:
+            st.info("Sin respuesta registrada")
+
+    with tab_error:
+        if entry["error"]:
+            st.error(entry["error"])
+        else:
+            st.success("Sin errores")
+
+    # Botón para limpiar el log
+    if st.button("🗑️ Limpiar log de debug", key=f"clear_debug_{page}"):
+        st.session_state["debug_log"] = []
+        st.rerun()
+
+
 # ── Router ───────────────────────────────────────────────────────────────────
 
 PAGES = {
@@ -980,3 +1206,6 @@ PAGES = {
 }
 
 PAGES[page]()
+
+# Panel de debug al final de cualquier página
+render_debug_panel()
