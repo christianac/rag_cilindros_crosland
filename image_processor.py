@@ -121,12 +121,51 @@ class CylinderImageProcessor:
         pil_image.save(buf, format=fmt)
         return buf.getvalue()
 
-    # ── Prompt por defecto ────────────────────────────────────────────────
+    # ── Prompts por defecto ───────────────────────────────────────────────
     DEFAULT_SYSTEM_INSTRUCTION = (
         "Eres un inspector experto de cilindros industriales. "
         "Analiza la imagen con foco en detectar abolladuras, golpes, "
         "deformaciones y cualquier daño visible en la superficie. "
         "Sé estricto: si dudas si hay daño, indícalo explícitamente."
+    )
+
+    # System prompt detallado de Crosland (para máxima precisión en
+    # control de calidad e integridad estructural de cilindros).
+    CROSLAND_SYSTEM_INSTRUCTION = (
+        "Eres un inspector experto en control de calidad e integridad "
+        "estructural de cilindros de alta presión y componentes industriales "
+        "de Crosland. Tu tarea es analizar imágenes de superficies metálicas "
+        "y reportar anomalías reales, diferenciando estrictamente los defectos "
+        "de manipulación de las marcas de fabricación.\n\n"
+        "Aplica los siguientes criterios de exclusión visual con precisión "
+        "quirúrgica:\n\n"
+        "1. DIFERENCIACIÓN DE ESTAMPADO VS. PICADURAS DE MANIPULACIÓN:\n"
+        "   - Estampado (Marcas Intencionales): Se caracteriza por caracteres "
+        "alfanuméricos con bordes definidos, geometría uniforme, profundidad "
+        "constante y un patrón alineado de presión mecánica (prensado). Si notas "
+        "irregularidades justo en los bordes de los números (como el '8' o el '6'), "
+        "analiza si la deformación es interna al carácter o externa.\n"
+        "   - Picaduras por Manipulación/Impacto (Defectos): Son depresiones "
+        "aleatorias, asimétricas, con fondos rugosos o puntiagudos que rompen la "
+        "continuidad del material de forma caótica. No siguen la geometría de "
+        "ninguna tipografía. Si un impacto ocurre 'cerca de' o 'sobre' un número "
+        "estampado, clasifícalo como 'Daño por impacto/manipulación posterior' y "
+        "NO como un defecto del estampado.\n\n"
+        "2. TEXTURA Y ACABADO SUPERFICIAL:\n"
+        "   - Identifica zonas con pintura descascarada, rugosidad localizada o "
+        "cambios de tonalidad (gris oscuro/oxidación) alrededor de los estampados. "
+        "Si la irregularidad carece de bordes rectos o simétricos, descarta "
+        "problemas de estampado y repórtalo como 'Desgaste por fricción, picaduras "
+        "por manipulación mecánica o corrosión focalizada'.\n\n"
+        "3. PROTOCOLO DE CONCORDANCIA CON CONTEXTO (QDRANT):\n"
+        "   - Al procesar la consulta, recibirás un contexto de imágenes similares "
+        "recuperadas desde Qdrant. Utiliza estos vectores de referencia para "
+        "comparar visualmente si el cilindro analizado presenta el estándar de "
+        "fábrica aprobado o si los patrones de sombra y profundidad en la zona de "
+        "caracteres coinciden con cilindros previamente clasificados como 'dañados "
+        "por golpe/picadura'.\n\n"
+        "Sé técnico, directo, descriptivo y evita generar falsos positivos "
+        "basados únicamente en la presencia de texto estampado legítimo."
     )
 
     DEFAULT_USER_PROMPT = (
@@ -141,6 +180,9 @@ class CylinderImageProcessor:
         "Responde en español de forma concisa y técnica."
     )
 
+    # Temperatura baja para análisis más determinístico
+    DEFAULT_TEMPERATURE = 0.2
+
     # ── Gemini Vision ─────────────────────────────────────────────────────
 
     def get_image_description(
@@ -148,6 +190,7 @@ class CylinderImageProcessor:
         image: Union[str, Image.Image, bytes],
         system_instruction: Optional[str] = None,
         user_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> str:
         """
         Generar descripción detallada de la imagen con gemini-2.5-flash.
@@ -159,6 +202,8 @@ class CylinderImageProcessor:
                                  Si es None, usa DEFAULT_SYSTEM_INSTRUCTION.
             user_prompt:         Prompt del usuario (opcional).
                                  Si es None, usa DEFAULT_USER_PROMPT.
+            temperature:         Temperatura de generación (default 0.2).
+                                 Bajo = más determinístico.
 
         Returns:
             str: Descripción generada por Gemini
@@ -169,6 +214,7 @@ class CylinderImageProcessor:
 
             sys_instr = system_instruction or self.DEFAULT_SYSTEM_INSTRUCTION
             usr_prmpt = user_prompt or self.DEFAULT_USER_PROMPT
+            temp      = temperature if temperature is not None else self.DEFAULT_TEMPERATURE
 
             # generateContent requiere v1beta para soportar systemInstruction
             response = self.client_v1beta.models.generate_content(
@@ -179,6 +225,7 @@ class CylinderImageProcessor:
                 ],
                 config=types.GenerateContentConfig(
                     system_instruction=sys_instr,
+                    temperature=temp,
                 ),
             )
 
@@ -225,6 +272,7 @@ class CylinderImageProcessor:
         image: Union[str, Image.Image, bytes],
         system_instruction: Optional[str] = None,
         user_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> Tuple[np.ndarray, str]:
         """
         Pipeline completo: imagen → descripción (Gemini Vision) → embedding.
@@ -233,13 +281,15 @@ class CylinderImageProcessor:
             image:              Imagen a procesar
             system_instruction: System instruction opcional para Gemini
             user_prompt:        Prompt de usuario opcional para Gemini
+            temperature:        Temperatura de Gemini (default 0.2)
 
         Returns:
             (embedding np.ndarray 3072d, descripción str)
         """
         logger.info("Paso 1/2 → Gemini Vision: generando descripción...")
         description = self.get_image_description(
-            image, system_instruction=system_instruction, user_prompt=user_prompt
+            image, system_instruction=system_instruction,
+            user_prompt=user_prompt, temperature=temperature,
         )
 
         logger.info("Paso 2/2 → Gemini Embeddings: vectorizando descripción...")
@@ -258,6 +308,8 @@ class CylinderImageProcessor:
         additional_metadata: Optional[Dict] = None,
         system_instruction: Optional[str] = None,
         user_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        reason: Optional[str] = None,
     ) -> str:
         """
         Procesar imagen y almacenarla en Qdrant Cloud.
@@ -271,6 +323,11 @@ class CylinderImageProcessor:
             additional_metadata: Metadatos extra a guardar
             system_instruction: System instruction opcional para Gemini
             user_prompt:        Prompt de usuario opcional para Gemini
+            temperature:        Temperatura de Gemini (default 0.2)
+            reason:             Razón de la clasificación (ej: 'Estampado '
+                                'confundido con abolladura, es falso positivo').
+                                Importante para entrenar el RAG en falsos
+                                positivos/negativos.
 
         Returns:
             str: UUID del punto insertado en Qdrant
@@ -282,7 +339,8 @@ class CylinderImageProcessor:
             )
 
         embedding, description = self.process_image_for_rag(
-            image, system_instruction=system_instruction, user_prompt=user_prompt
+            image, system_instruction=system_instruction,
+            user_prompt=user_prompt, temperature=temperature,
         )
 
         point_id = str(uuid.uuid4())
@@ -299,6 +357,12 @@ class CylinderImageProcessor:
             "vision_model":          VISION_MODEL,
             "vector_size":           int(embedding.shape[0]),
         }
+
+        # Guardar razón como metadata para que el RAG la use en futuras
+        # clasificaciones (clave para falsos positivos / falsos negativos)
+        if reason:
+            payload["reason"] = reason.strip()
+
         if additional_metadata:
             payload.update(additional_metadata)
 
@@ -318,6 +382,7 @@ class CylinderImageProcessor:
         filter_condition: Optional[str] = None,
         system_instruction: Optional[str] = None,
         user_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> List[Dict]:
         """
         Buscar imágenes similares por similitud coseno en Qdrant.
@@ -329,12 +394,14 @@ class CylinderImageProcessor:
             filter_condition:   Filtrar por 'correct' | 'dented' | 'false_positive'
             system_instruction: System instruction opcional para Gemini
             user_prompt:        Prompt de usuario opcional para Gemini
+            temperature:        Temperatura de Gemini (default 0.2)
 
         Returns:
             Lista de dicts con {id, score, metadata}
         """
         query_embedding, _ = self.process_image_for_rag(
-            query_image, system_instruction=system_instruction, user_prompt=user_prompt
+            query_image, system_instruction=system_instruction,
+            user_prompt=user_prompt, temperature=temperature,
         )
 
         query_filter = None
@@ -363,31 +430,37 @@ class CylinderImageProcessor:
         confidence_threshold: float = 0.8,
         system_instruction: Optional[str] = None,
         user_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> Dict:
         """
         Clasificar estado del cilindro mediante RAG (votación ponderada).
 
         El contexto recuperado de Qdrant se envía de vuelta a gemini-2.5-flash
-        para que genere una respuesta enriquecida final.
+        para que genere una respuesta enriquecida final. Si las imágenes
+        similares tienen 'reason' guardada, se incluye en el contexto para
+        que Gemini aprenda de falsos positivos/negativos previos.
 
         Args:
             image:                Imagen a clasificar
             confidence_threshold: Umbral mínimo para considerar la predicción confiable
             system_instruction:   System instruction opcional para Gemini
             user_prompt:          Prompt de usuario opcional para Gemini
+            temperature:          Temperatura de Gemini (default 0.2)
 
         Returns:
             Dict con predicted_condition, confidence, description, rag_explanation, …
         """
         # ── 1. Describir imagen de entrada ────────────────────────────────
         description = self.get_image_description(
-            image, system_instruction=system_instruction, user_prompt=user_prompt
+            image, system_instruction=system_instruction,
+            user_prompt=user_prompt, temperature=temperature,
         )
 
         # ── 2. Recuperar contexto de Qdrant ───────────────────────────────
         similar_images = self.search_similar_images(
             query_image=image, limit=10, score_threshold=0.4,
             system_instruction=system_instruction, user_prompt=user_prompt,
+            temperature=temperature,
         )
 
         if not similar_images:
@@ -413,20 +486,30 @@ class CylinderImageProcessor:
         confidence = votes[predicted] / total if total > 0 else 0.0
 
         # ── 4. Generar explicación enriquecida con gemini-2.5-flash ───────
-        context_lines = "\n".join(
-            f"- Similitud {h['score']:.2f}: {h['metadata']['cylinder_condition']} "
-            f"| {h['metadata'].get('description', '')[:120]}"
-            for h in similar_images[:5]
-        )
+        # Las imágenes similares pueden traer 'reason' (falso positivo/negativo);
+        # esto le enseña a Gemini a NO repetir errores pasados.
+        def _format_context_line(h):
+            cond = h["metadata"]["cylinder_condition"]
+            desc = h["metadata"].get("description", "")[:120]
+            reason = h["metadata"].get("reason", "")
+            line = f"- Similitud {h['score']:.2f}: {cond} | {desc}"
+            if reason:
+                line += f"\n    ⚠ Razón registrada: {reason}"
+            return line
+
+        context_lines = "\n".join(_format_context_line(h) for h in similar_images[:5])
+
         # Usar el system_instruction del usuario si existe; si no, el default
-        sys_instr = system_instruction or (
-            "Eres un experto en inspección de cilindros industriales. "
-            "Analiza con foco en detectar abolladuras, golpes y deformaciones."
-        )
+        sys_instr = system_instruction or self.DEFAULT_SYSTEM_INSTRUCTION
+        temp      = temperature if temperature is not None else self.DEFAULT_TEMPERATURE
+
         rag_prompt = (
             f"Descripción de la imagen analizada:\n{description}\n\n"
             f"Ejemplos similares encontrados en la base de datos:\n{context_lines}\n\n"
             f"Clasificación automática: '{predicted}' (confianza {confidence:.0%}).\n\n"
+            f"Si alguno de los ejemplos tiene 'Razón registrada', úsala como pista: "
+            f"si la imagen se parece a un falso positivo previo, NO la marques como "
+            f"dañada; si se parece a un falso negativo, SÍ marca el daño.\n\n"
             f"Proporciona una breve explicación técnica en español de por qué esta imagen "
             f"corresponde a la categoría '{predicted}', basándote en los ejemplos anteriores."
         )
@@ -438,6 +521,7 @@ class CylinderImageProcessor:
                 contents=rag_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=sys_instr,
+                    temperature=temp,
                 ),
             )
             rag_explanation = rag_response.text.strip()

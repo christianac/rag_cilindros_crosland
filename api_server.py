@@ -112,6 +112,8 @@ def process_image():
         source_info = data.get("source_info", {})
         system_instruction = data.get("system_instruction")  # opcional
         user_prompt = data.get("user_prompt")  # opcional
+        reason = data.get("reason")  # opcional: razon del falso positivo/negativo
+        temperature = data.get("temperature")  # opcional: default 0.2
 
         # Decodificar imagen base64
         try:
@@ -131,6 +133,8 @@ def process_image():
             additional_metadata=source_info,
             system_instruction=system_instruction,
             user_prompt=user_prompt,
+            reason=reason,
+            temperature=temperature,
         )
         
         logger.info(f"Imagen procesada con Gemini exitosamente: {point_id}")
@@ -174,6 +178,7 @@ def classify_image():
         confidence_threshold = data.get("confidence_threshold", 0.8)
         system_instruction = data.get("system_instruction")  # opcional
         user_prompt = data.get("user_prompt")  # opcional
+        temperature = data.get("temperature")  # opcional: default 0.2
 
         try:
             if image_data.startswith('data:'):
@@ -188,6 +193,7 @@ def classify_image():
             confidence_threshold=confidence_threshold,
             system_instruction=system_instruction,
             user_prompt=user_prompt,
+            temperature=temperature,
         )
         
         logger.info(f"Imagen clasificada con Gemini: {classification_result['predicted_condition']}")
@@ -231,6 +237,7 @@ def search_similar():
         filter_condition = data.get("filter_condition")
         system_instruction = data.get("system_instruction")  # opcional
         user_prompt = data.get("user_prompt")  # opcional
+        temperature = data.get("temperature")  # opcional: default 0.2
 
         try:
             if image_data.startswith('data:'):
@@ -247,6 +254,7 @@ def search_similar():
             filter_condition=filter_condition,
             system_instruction=system_instruction,
             user_prompt=user_prompt,
+            temperature=temperature,
         )
         
         logger.info(f"Encontradas {len(similar_images)} imágenes similares")

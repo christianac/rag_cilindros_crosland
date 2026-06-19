@@ -94,7 +94,9 @@ class _ApiClient:
     def upload(self, file_bytes: bytes, condition: str,
                confidence: float, verified: bool,
                system_instruction: Optional[str] = None,
-               user_prompt: Optional[str] = None) -> Dict[str, Any]:
+               user_prompt: Optional[str] = None,
+               reason: Optional[str] = None,
+               temperature: Optional[float] = None) -> Dict[str, Any]:
         body = {
             "image_data":         self._encode(file_bytes),
             "cylinder_condition": condition,
@@ -105,11 +107,16 @@ class _ApiClient:
             body["system_instruction"] = system_instruction
         if user_prompt:
             body["user_prompt"] = user_prompt
+        if reason:
+            body["reason"] = reason
+        if temperature is not None:
+            body["temperature"] = temperature
         return self._post("/process-image", body)
 
     def classify(self, file_bytes: bytes, threshold: float,
                  system_instruction: Optional[str] = None,
-                 user_prompt: Optional[str] = None) -> Dict[str, Any]:
+                 user_prompt: Optional[str] = None,
+                 temperature: Optional[float] = None) -> Dict[str, Any]:
         body = {
             "image_data":          self._encode(file_bytes),
             "confidence_threshold": threshold,
@@ -118,12 +125,15 @@ class _ApiClient:
             body["system_instruction"] = system_instruction
         if user_prompt:
             body["user_prompt"] = user_prompt
+        if temperature is not None:
+            body["temperature"] = temperature
         return self._post("/classify-image", body)
 
     def search(self, file_bytes: bytes, limit: int,
                threshold: float, filter_cond: Optional[str],
                system_instruction: Optional[str] = None,
-               user_prompt: Optional[str] = None) -> Dict[str, Any]:
+               user_prompt: Optional[str] = None,
+               temperature: Optional[float] = None) -> Dict[str, Any]:
         body = {"image_data": self._encode(file_bytes), "limit": limit,
                 "score_threshold": threshold}
         if filter_cond:
@@ -132,6 +142,8 @@ class _ApiClient:
             body["system_instruction"] = system_instruction
         if user_prompt:
             body["user_prompt"] = user_prompt
+        if temperature is not None:
+            body["temperature"] = temperature
         return self._post("/search-similar", body)
 
 
@@ -168,37 +180,45 @@ class _DirectClient:
     def upload(self, file_bytes: bytes, condition: str,
                confidence: float, verified: bool,
                system_instruction: Optional[str] = None,
-               user_prompt: Optional[str] = None) -> Dict[str, Any]:
+               user_prompt: Optional[str] = None,
+               reason: Optional[str] = None,
+               temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         pid = self.proc.upload_image(
             image=pil, cylinder_condition=condition,
             confidence_score=confidence, source="gui", verified=verified,
             system_instruction=system_instruction,
             user_prompt=user_prompt,
+            reason=reason,
+            temperature=temperature,
         )
         return {"success": True, "point_id": pid}
 
     def classify(self, file_bytes: bytes, threshold: float,
                  system_instruction: Optional[str] = None,
-                 user_prompt: Optional[str] = None) -> Dict[str, Any]:
+                 user_prompt: Optional[str] = None,
+                 temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         result = self.proc.classify_cylinder(
             image=pil, confidence_threshold=threshold,
             system_instruction=system_instruction,
             user_prompt=user_prompt,
+            temperature=temperature,
         )
         return {"success": True, "classification": result}
 
     def search(self, file_bytes: bytes, limit: int,
                threshold: float, filter_cond: Optional[str],
                system_instruction: Optional[str] = None,
-               user_prompt: Optional[str] = None) -> Dict[str, Any]:
+               user_prompt: Optional[str] = None,
+               temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         hits = self.proc.search_similar_images(
             query_image=pil, limit=limit,
             score_threshold=threshold, filter_condition=filter_cond,
             system_instruction=system_instruction,
             user_prompt=user_prompt,
+            temperature=temperature,
         )
         return {"success": True, "similar_images": hits, "count": len(hits)}
 
@@ -303,6 +323,40 @@ def page_upload():
     st.title("📤 Subir imagen de entrenamiento")
     st.caption("Sube una imagen etiquetada para entrenar el sistema RAG")
 
+    # ── System instruction (FUERA del form) ─────────────────────────────────
+    with st.expander("🧠 System instruction (opcional)", expanded=False):
+        preset = st.selectbox(
+            "Preset",
+            list(PRESET_SYS_INSTRUCTIONS.keys()),
+            key="upload_preset",
+            help="Define cómo Gemini analiza la imagen al subirla",
+        )
+        if preset == "Personalizado":
+            sys_instr_upload = st.text_area(
+                "✏️ Escribe tu instrucción personalizada:",
+                value=st.session_state.get("custom_sys_instr_upload", ""),
+                height=150,
+                key="custom_sys_instr_upload",
+                placeholder="Ej: 'Detecta abolladuras mayores a 1cm...'",
+            )
+        else:
+            preset_text = PRESET_SYS_INSTRUCTIONS[preset]
+            sys_instr_upload = preset_text
+            st.text_area(
+                "Instrucción que se enviará a Gemini (solo lectura):",
+                value=preset_text or "(vacío → se usará el default interno)",
+                height=150,
+                disabled=True,
+            )
+            if not preset_text:
+                sys_instr_upload = None
+
+        temperature_upload = st.slider(
+            "Temperatura Gemini",
+            min_value=0.0, max_value=1.0, value=0.2, step=0.05,
+            key="upload_temperature",
+        )
+
     col_form, col_preview = st.columns([1, 1])
 
     with col_form:
@@ -323,6 +377,26 @@ def page_upload():
                 "Verificado por humano",
                 value=True,
                 help="Marca si un humano revisó esta etiqueta",
+            )
+
+            # ── Razón (CRÍTICO para falsos positivos / falsos negativos) ───
+            reason = st.text_area(
+                "📝 Razón / justificación de la etiqueta",
+                value=st.session_state.get("upload_reason", ""),
+                height=100,
+                key="upload_reason",
+                placeholder=(
+                    "Ejemplos:\n"
+                    "• 'Estampado confundido con abolladura → es falso positivo'\n"
+                    "• 'Marca de fábrica, NO es daño'\n"
+                    "• 'Abolladura real en zona superior izquierda, ~3cm'\n"
+                    "• 'Cilindro en buen estado, superficie íntegra'"
+                ),
+                help=(
+                    "Esta razón se guarda como metadata y se inyecta en el "
+                    "contexto RAG al clasificar imágenes similares. Es "
+                    "CLAVE para corregir falsos positivos y falsos negativos."
+                ),
             )
 
             uploaded = st.file_uploader(
@@ -349,8 +423,12 @@ def page_upload():
         try:
             with st.spinner("⏳ Procesando con Gemini y almacenando en Qdrant…"):
                 t0 = time.time()
-                data = client.upload(uploaded.getvalue(), condition,
-                                     confidence, verified)
+                data = client.upload(
+                    uploaded.getvalue(), condition, confidence, verified,
+                    system_instruction=sys_instr_upload if sys_instr_upload else None,
+                    reason=reason.strip() if reason else None,
+                    temperature=temperature_upload,
+                )
                 dt = time.time() - t0
 
             st.success(f"✅ Imagen subida correctamente en {dt:.1f}s")
@@ -365,16 +443,123 @@ def page_upload():
                             Confianza: {confidence:.0%}
                         </span>
                     </div>
+                    {f'<div style="margin-top:0.5rem; color:#94a3b8; font-size:0.9rem;">📝 {reason}</div>' if reason else ''}
                 </div>
             """, unsafe_allow_html=True)
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
 
+# ── Presets de System Instruction para la GUI ────────────────────────────────
+
+PRESET_SYS_INSTRUCTIONS = {
+    "(usar default)": "",
+    "Crosland (control calidad)": (
+        "Eres un inspector experto en control de calidad e integridad "
+        "estructural de cilindros de alta presión y componentes industriales "
+        "de Crosland. Tu tarea es analizar imágenes de superficies metálicas "
+        "y reportar anomalías reales, diferenciando estrictamente los defectos "
+        "de manipulación de las marcas de fabricación.\n\n"
+        "Aplica los siguientes criterios de exclusión visual con precisión "
+        "quirúrgica:\n\n"
+        "1. DIFERENCIACIÓN DE ESTAMPADO VS. PICADURAS DE MANIPULACIÓN:\n"
+        "   - Estampado (Marcas Intencionales): Se caracteriza por caracteres "
+        "alfanuméricos con bordes definidos, geometría uniforme, profundidad "
+        "constante y un patrón alineado de presión mecánica (prensado). Si notas "
+        "irregularidades justo en los bordes de los números (como el '8' o el '6'), "
+        "analiza si la deformación es interna al carácter o externa.\n"
+        "   - Picaduras por Manipulación/Impacto (Defectos): Son depresiones "
+        "aleatorias, asimétricas, con fondos rugosos o puntiagudos que rompen la "
+        "continuidad del material de forma caótica. No siguen la geometría de "
+        "ninguna tipografía. Si un impacto ocurre 'cerca de' o 'sobre' un número "
+        "estampado, clasifícalo como 'Daño por impacto/manipulación posterior' y "
+        "NO como un defecto del estampado.\n\n"
+        "2. TEXTURA Y ACABADO SUPERFICIAL:\n"
+        "   - Identifica zonas con pintura descascarada, rugosidad localizada o "
+        "cambios de tonalidad (gris oscuro/oxidación) alrededor de los estampados. "
+        "Si la irregularidad carece de bordes rectos o simétricos, descarta "
+        "problemas de estampado y repórtalo como 'Desgaste por fricción, picaduras "
+        "por manipulación mecánica o corrosión focalizada'.\n\n"
+        "3. PROTOCOLO DE CONCORDANCIA CON CONTEXTO (QDRANT):\n"
+        "   - Al procesar la consulta, recibirás un contexto de imágenes similares "
+        "recuperadas desde Qdrant. Utiliza estos vectores de referencia para "
+        "comparar visualmente si el cilindro analizado presenta el estándar de "
+        "fábrica aprobado o si los patrones de sombra y profundidad en la zona de "
+        "caracteres coinciden con cilindros previamente clasificados como 'dañados "
+        "por golpe/picadura'.\n\n"
+        "Sé técnico, directo, descriptivo y evita generar falsos positivos "
+        "basados únicamente en la presencia de texto estampado legítimo."
+    ),
+    "Estricto (abolladuras)": (
+        "Eres un inspector MUY ESTRICTO de cilindros industriales. "
+        "Considera CUALQUIER irregularidad en la superficie, "
+        "por mínima que sea, como posible abolladura. "
+        "Es preferible un falso positivo a pasar por alto un daño real. "
+        "Busca específicamente: hundimientos, golpes, deformaciones, "
+        "marcas de impacto, abolladuras pequeñas, medianas o grandes, "
+        "y cualquier desviación respecto a una superficie cilíndrica perfecta."
+    ),
+    "Permisivo": (
+        "Eres un inspector PERMISIVO. Solo marca como dañado si el daño "
+        "es claramente visible y significativo. Marcas menores o sombras "
+        "no deben clasificarse como abolladuras."
+    ),
+    "Solo daños evidentes": (
+        "Eres un inspector moderado. Clasifica como 'dented' únicamente "
+        "daños que serían rechazados en una inspección de calidad estándar. "
+        "Daños cosméticos menores no cuentan."
+    ),
+    "Personalizado": "",
+}
+
+
 def page_classify():
     st.title("🔍 Clasificar imagen")
     st.caption("Sube una imagen y el sistema la clasificará usando RAG")
 
+    # ── System instruction FUERA del form (necesario para edición interactiva) ──
+    with st.expander("🧠 System instruction (opcional)", expanded=False):
+        preset = st.selectbox(
+            "Preset",
+            list(PRESET_SYS_INSTRUCTIONS.keys()),
+            key="classify_preset",
+            help="Define cómo Gemini analiza la imagen",
+        )
+
+        # Si NO es personalizado, mostrar el texto del preset (solo lectura)
+        # Si es personalizado, mostrar text_area editable
+        if preset == "Personalizado":
+            sys_instr = st.text_area(
+                "✏️ Escribe tu instrucción personalizada:",
+                value=st.session_state.get("custom_sys_instr_classify", ""),
+                height=200,
+                placeholder=(
+                    "Ej: 'Detecta solo abolladuras mayores a 2cm y diferencia "
+                    "marcas de fábrica de golpes. Ignora el estampado legítimo.'"
+                ),
+                key="custom_sys_instr_classify",
+            )
+        else:
+            preset_text = PRESET_SYS_INSTRUCTIONS[preset]
+            sys_instr = preset_text
+            st.text_area(
+                "Instrucción que se enviará a Gemini (solo lectura):",
+                value=preset_text or "(vacío → se usará el default interno)",
+                height=180,
+                disabled=True,
+            )
+            if not preset_text:
+                sys_instr = None  # usar default interno
+
+        # Temperatura (default 0.2 = más determinístico)
+        temperature = st.slider(
+            "Temperatura Gemini",
+            min_value=0.0, max_value=1.0, value=0.2, step=0.05,
+            help="Bajo (0.0-0.3) = más determinístico. Alto (0.7-1.0) = más creativo.",
+            key="classify_temperature",
+        )
+
+    # ── Form principal ──────────────────────────────────────────────────────
     col_form, col_preview = st.columns([1, 1])
 
     with col_form:
@@ -383,57 +568,12 @@ def page_classify():
                 "Umbral de confianza",
                 min_value=0.0, max_value=1.0, value=0.7, step=0.05,
                 help="Si la confianza es menor, se marca como 'requiere revisión'",
+                key="classify_threshold",
             )
-
-            # ── System instruction (configurable) ─────────────────────────
-            with st.expander("🧠 System instruction (opcional)", expanded=False):
-                preset = st.selectbox(
-                    "Preset",
-                    ["(usar default)", "Estricto (abolladuras)", "Permisivo",
-                     "Solo daños evidentes", "Personalizado"],
-                    help="Define cómo Gemini analiza la imagen",
-                )
-                default_text = {
-                    "(usar default)":      "",
-                    "Estricto (abolladuras)":
-                        "Eres un inspector MUY ESTRICTO de cilindros industriales. "
-                        "Considera CUALQUIER irregularidad en la superficie, "
-                        "por mínima que sea, como posible abolladura. "
-                        "Es preferible un falso positivo a pasar por alto un daño real. "
-                        "Busca específicamente: hundimientos, golpes, deformaciones, "
-                        "marcas de impacto, abolladuras pequeñas, medianas o grandes, "
-                        "y cualquier desviación respecto a una superficie cilíndrica perfecta.",
-                    "Permisivo":
-                        "Eres un inspector PERMISIVO. Solo marca como dañado si el daño "
-                        "es claramente visible y significativo. Marcas menores o sombras "
-                        "no deben clasificarse como abolladuras.",
-                    "Solo daños evidentes":
-                        "Eres un inspector moderado. Clasifica como 'dented' únicamente "
-                        "daños que serían rechazados en una inspección de calidad estándar. "
-                        "Daños cosméticos menores no cuentan.",
-                    "Personalizado": "",
-                }[preset]
-
-                if preset == "Personalizado":
-                    sys_instr = st.text_area(
-                        "Escribe tu instrucción personalizada:",
-                        value=st.session_state.get("custom_sys_instr_classify", ""),
-                        height=120,
-                        placeholder="Ej: Detecta solo abolladuras mayores a 2cm...",
-                    )
-                    st.session_state["custom_sys_instr_classify"] = sys_instr
-                else:
-                    sys_instr = default_text
-                    st.text_area(
-                        "Instrucción que se enviará a Gemini:",
-                        value=default_text or "(vacío → usa default)",
-                        height=120,
-                        disabled=True,
-                    )
-
             uploaded = st.file_uploader(
                 "Imagen a clasificar",
                 type=["jpg", "jpeg", "png", "bmp", "webp"],
+                key="classify_uploader",
             )
             submitted = st.form_submit_button("🔍 Clasificar", type="primary",
                                               use_container_width=True)
@@ -456,6 +596,7 @@ def page_classify():
                     uploaded.getvalue(),
                     threshold,
                     system_instruction=sys_instr if sys_instr else None,
+                    temperature=temperature,
                 )
                 dt = time.time() - t0
             render_classification(data, dt)
