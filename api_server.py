@@ -5,43 +5,96 @@ SDK:    google-genai (nueva)
 Visión: gemini-2.5-flash
 Embed:  gemini-embedding-2 (3072d)
 DB:     Qdrant Cloud
+
+IMPORTANTE (Cloud Run):
+  El procesador (Gemini + Qdrant) se inicializa de forma PEREZOSA,
+  es decir, solo en el primer request real. Esto es CRÍTICO para que
+  Cloud Run no cancele el arranque: el contenedor debe escuchar en
+  PORT=8080 inmediatamente, antes de cargar el modelo.
 """
 
 import os
 import logging
+import threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import base64
 from dotenv import load_dotenv
-from image_processor import CylinderImageProcessor, process_image_from_n8n
 
 # Cargar variables de entorno
 load_dotenv()
 
 # Configuración de logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 # Inicializar Flask
 app = Flask(__name__)
 CORS(app)
 
-# Inicializar procesador de imágenes
-try:
-    processor = CylinderImageProcessor(
-        gemini_api_key=os.getenv("GEMINI_API_KEY"),
-        qdrant_cloud_url=os.getenv("QDRANT_CLOUD_URL"),
-        qdrant_api_key=os.getenv("QDRANT_API_KEY")
-    )
-    logger.info("Procesador inicializado | gemini-2.5-flash + gemini-embedding-2 (3072d) + Qdrant Cloud")
-except Exception as e:
-    logger.error(f"Error inicializando procesador: {e}")
-    processor = None
+# ── Inicialización PEREZOSA del procesador ────────────────────────────────────
+# El procesador tarda ~10-30s en cargar Gemini + Qdrant. Si lo creamos al
+# import-time del módulo, Flask no arranca hasta que termine y Cloud Run
+# mata el contenedor por timeout. Por eso usamos lazy init con lock.
+
+_processor = None
+_processor_lock = threading.Lock()
+
+
+def get_processor():
+    """Devuelve el procesador, creándolo perezosamente si no existe."""
+    global _processor
+    if _processor is not None:
+        return _processor
+
+    with _processor_lock:
+        if _processor is not None:
+            return _processor  # otro thread lo creó mientras esperábamos
+
+        logger.info("Inicializando CylinderImageProcessor (lazy)...")
+        from image_processor import CylinderImageProcessor  # import perezoso
+
+        try:
+            _processor = CylinderImageProcessor(
+                gemini_api_key=os.getenv("GEMINI_API_KEY"),
+                qdrant_cloud_url=os.getenv("QDRANT_CLOUD_URL"),
+                qdrant_api_key=os.getenv("QDRANT_API_KEY")
+            )
+            logger.info("Procesador listo | gemini-2.5-flash + gemini-embedding-2 (3072d) + Qdrant")
+            return _processor
+        except Exception as e:
+            logger.error(f"Error inicializando procesador: {e}")
+            return None
+
+
+# ── Health checks (responden INMEDIATAMENTE sin tocar Gemini/Qdrant) ─────────
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    """Liveness probe — Cloud Run verifica que el contenedor está vivo.
+    Responde en <1ms sin importar el estado del procesador."""
+    return "OK", 200
+
+
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint."""
+    return jsonify({
+        "status":  "ok",
+        "service": "rag-api",
+        "version": "1.0",
+        "note":    "El procesador se inicializa en el primer request real",
+    })
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Endpoint de salud"""
-    if processor is None:
+    """Health check detallado (puede tardar la primera vez)."""
+    proc = get_processor()
+    if proc is None:
         return jsonify({
             "status": "error", 
             "message": "Procesador no disponible",
@@ -50,10 +103,10 @@ def health_check():
     
     # Verificar configuración
     config_info = {
-        "qdrant_type":     "cloud" if processor.qdrant_cloud_url else "local",
-        "embedding_model": processor.embedding_model,
-        "vision_model":    processor.vision_model_id,
-        "vector_size":     processor.vector_size,
+        "qdrant_type":     "cloud" if proc.qdrant_cloud_url else "local",
+        "embedding_model": proc.embedding_model,
+        "vision_model":    proc.vision_model_id,
+        "vector_size":     proc.vector_size,
         "sdk":             "google-genai",
     }
 
@@ -84,7 +137,8 @@ def process_image():
     }
     """
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Validar datos de entrada
@@ -126,7 +180,7 @@ def process_image():
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
 
         # Subir imagen usando Gemini
-        result = processor.upload_image(
+        result = proc.upload_image(
             image=image_bytes,
             cylinder_condition=cylinder_condition,
             confidence_score=confidence_score,
@@ -155,8 +209,8 @@ def process_image():
             "message":         "Imagen procesada y almacenada exitosamente con Gemini",
             "cylinder_condition": cylinder_condition,
             "confidence_score": confidence_score,
-            "embedding_model": processor.embedding_model,
-            "vision_model":    processor.vision_model_id,
+            "embedding_model": proc.embedding_model,
+            "vision_model":    proc.vision_model_id,
         })
         
     except Exception as e:
@@ -175,7 +229,8 @@ def classify_image():
     }
     """
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Validar datos de entrada
@@ -198,7 +253,7 @@ def classify_image():
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
 
         # Clasificar imagen usando Gemini
-        classification_result = processor.classify_cylinder(
+        classification_result = proc.classify_cylinder(
             image=image_bytes,
             confidence_threshold=confidence_threshold,
             system_instruction=system_instruction,
@@ -211,7 +266,7 @@ def classify_image():
         return jsonify({
             "success":    True,
             "classification": classification_result,
-            "model_used": processor.vision_model_id,
+            "model_used": proc.vision_model_id,
         })
         
     except Exception as e:
@@ -232,7 +287,8 @@ def search_similar():
     }
     """
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Validar datos de entrada
@@ -257,7 +313,7 @@ def search_similar():
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
 
         # Buscar imágenes similares usando Gemini
-        similar_images = processor.search_similar_images(
+        similar_images = proc.search_similar_images(
             query_image=image_bytes,
             limit=limit,
             score_threshold=score_threshold,
@@ -273,7 +329,7 @@ def search_similar():
             "success": True,
             "similar_images": similar_images,
             "count": len(similar_images),
-            "model_used": f"{processor.vision_model_id} + {processor.embedding_model}"
+            "model_used": f"{proc.vision_model_id} + {proc.embedding_model}"
         })
         
     except Exception as e:
@@ -284,20 +340,21 @@ def search_similar():
 def get_stats():
     """Obtener estadísticas de la base de datos"""
     try:
-        if processor is None:
+        proc = get_processor()
+        if proc is None:
             return jsonify({"success": False, "error": "Procesador no disponible"}), 500
         
         # Obtener información de la colección
-        collection_info = processor.qdrant_client.get_collection(processor.collection_name)
+        collection_info = proc.qdrant_client.get_collection(proc.collection_name)
         
         stats = {
             "total_images": collection_info.points_count,
             "vector_size": collection_info.config.params.vectors.size,
             "distance": str(collection_info.config.params.vectors.distance),
             "indexed_vectors": collection_info.indexed_vectors_count,
-            "qdrant_type": "cloud" if processor.qdrant_cloud_url else "local",
-            "embedding_model": processor.embedding_model,
-            "vision_model":    processor.vision_model_id,
+            "qdrant_type": "cloud" if proc.qdrant_cloud_url else "local",
+            "embedding_model": proc.embedding_model,
+            "vision_model":    proc.vision_model_id,
             "sdk":             "google-genai"
         }
         
@@ -309,21 +366,6 @@ def get_stats():
     except Exception as e:
         logger.error(f"Error obteniendo estadísticas: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/', methods=['GET'])
-def root():
-    """Health check básico para Cloud Run"""
-    return jsonify({
-        "status":  "ok",
-        "service": "rag-api",
-        "version": "1.0",
-    })
-
-@app.route('/healthz', methods=['GET'])
-def healthz():
-    """Health check para startup/liveness probe de Cloud Run"""
-    return jsonify({"status": "ok"}), 200
-
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({"error": "Endpoint no encontrado"}), 404
@@ -344,10 +386,9 @@ if __name__ == '__main__':
     print(f"Qdrant Cloud URL: {'✓' if os.getenv('QDRANT_CLOUD_URL') else '✗ Falta'}")
     print(f"Qdrant API Key:   {'✓' if os.getenv('QDRANT_API_KEY')   else '✗ Falta'}")
     print("=" * 40)
+    print("ℹ️  El procesador (Gemini + Qdrant) se inicializará")
+    print("   perezosamente en el primer request.")
+    print("=" * 40)
 
-    if processor is None:
-        print("❌ ERROR: No se pudo inicializar el procesador")
-        exit(1)
-
-    print("✅ Servidor listo")
+    print(f"✅ Servidor listo en {host}:{port}")
     app.run(host=host, port=port, debug=debug)

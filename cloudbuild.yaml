@@ -66,6 +66,9 @@ steps:
       # Timeout más generoso para el primer arranque (carga el modelo Gemini)
       - --startup-probe-timeout=240s
       - --startup-probe-period=10s
+      - --startup-probe-path=/healthz
+      - --liveness-probe-path=/healthz
+      - --liveness-probe-timeout=10s
       - --set-secrets=GEMINI_API_KEY=GEMINI_API_KEY:latest
       - --set-secrets=QDRANT_CLOUD_URL=QDRANT_CLOUD_URL:latest
       - --set-secrets=QDRANT_API_KEY=QDRANT_API_KEY:latest
@@ -136,6 +139,9 @@ steps:
           # Timeout más generoso para el primer arranque
           --startup-probe-timeout=240s \
           --startup-probe-period=10s \
+          --startup-probe-path=/healthz \
+          --liveness-probe-path=/healthz \
+          --liveness-probe-timeout=10s \
           --set-env-vars="API_URL=$${API_URL},PYTHONUNBUFFERED=1"
     waitFor: [push-gui, get-api-url]
 
