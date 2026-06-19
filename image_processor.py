@@ -283,13 +283,15 @@ class CylinderImageProcessor:
                 "must": [{"key": "cylinder_condition", "match": {"value": filter_condition}}]
             }
 
-        hits = self.qdrant_client.search(
+        # qdrant-client >= 1.10 usa query_points() en lugar de search()
+        response = self.qdrant_client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_embedding.tolist(),
+            query=query_embedding.tolist(),
             query_filter=query_filter,
             limit=limit,
             score_threshold=score_threshold,
         )
+        hits = response.points
 
         results = [{"id": h.id, "score": h.score, "metadata": h.payload} for h in hits]
         logger.info(f"Búsqueda completada: {len(results)} resultados")
