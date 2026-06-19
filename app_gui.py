@@ -96,11 +96,14 @@ class _ApiClient:
                system_instruction: Optional[str] = None,
                user_prompt: Optional[str] = None,
                reason: Optional[str] = None,
-               temperature: Optional[float] = None) -> Dict[str, Any]:
+               temperature: Optional[float] = None,
+               expected_code: Optional[str] = None,
+               training_type: str = "cylinder") -> Dict[str, Any]:
         body = {
             "image_data":         self._encode(file_bytes),
             "cylinder_condition": condition,
             "confidence_score":   confidence,
+            "training_type":      training_type,
             "source_info":        {"source": "gui", "verified": verified},
         }
         if system_instruction:
@@ -111,6 +114,8 @@ class _ApiClient:
             body["reason"] = reason
         if temperature is not None:
             body["temperature"] = temperature
+        if expected_code:
+            body["expected_code"] = expected_code
         return self._post("/process-image", body)
 
     def classify(self, file_bytes: bytes, threshold: float,
@@ -182,17 +187,21 @@ class _DirectClient:
                system_instruction: Optional[str] = None,
                user_prompt: Optional[str] = None,
                reason: Optional[str] = None,
-               temperature: Optional[float] = None) -> Dict[str, Any]:
+               temperature: Optional[float] = None,
+               expected_code: Optional[str] = None,
+               training_type: str = "cylinder") -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        pid = self.proc.upload_image(
+        result = self.proc.upload_image(
             image=pil, cylinder_condition=condition,
             confidence_score=confidence, source="gui", verified=verified,
             system_instruction=system_instruction,
             user_prompt=user_prompt,
             reason=reason,
             temperature=temperature,
+            expected_code=expected_code,
+            training_type=training_type,
         )
-        return {"success": True, "point_id": pid}
+        return {"success": True, **result}
 
     def classify(self, file_bytes: bytes, threshold: float,
                  system_instruction: Optional[str] = None,
@@ -323,6 +332,24 @@ def page_upload():
     st.title("📤 Subir imagen de entrenamiento")
     st.caption("Sube una imagen etiquetada para entrenar el sistema RAG")
 
+    # ── Tipo de entrenamiento (FUERA del form) ──────────────────────────────
+    training_type = st.radio(
+        "🎯 Tipo de entrenamiento",
+        options=["cylinder", "character"],
+        format_func=lambda x: (
+            "🛢️ Cilindro completo (clasificación correct/dented)"
+            if x == "cylinder"
+            else "🔤 Carácter individual (entrenar OCR — letra vs número)"
+        ),
+        horizontal=True,
+        key="upload_training_type",
+        help=(
+            "Cilindro completo: sube el cilindro entero con etiqueta de condición. "
+            "Carácter individual: sube UNA letra o número recortado para enseñarle "
+            "a Gemini a distinguir letras de números (ej: D vs 0, I vs 1, B vs 8)."
+        ),
+    )
+
     # ── System instruction (FUERA del form) ─────────────────────────────────
     with st.expander("🧠 System instruction (opcional)", expanded=False):
         preset = st.selectbox(
@@ -353,19 +380,34 @@ def page_upload():
 
         temperature_upload = st.slider(
             "Temperatura Gemini",
-            min_value=0.0, max_value=1.0, value=0.2, step=0.05,
+            min_value=0.0, max_value=1.0,
+            value=0.0 if training_type == "character" else 0.2,
+            step=0.05,
             key="upload_temperature",
+            help=(
+                "Para OCR (carácter) usa 0.0 = máximo determinismo. "
+                "Para cilindro completo 0.2 es adecuado."
+            ),
         )
 
     col_form, col_preview = st.columns([1, 1])
 
     with col_form:
         with st.form("upload_form", clear_on_submit=True):
-            condition = st.selectbox(
-                "Condición del cilindro *",
-                options=VALID_CONDITIONS,
-                format_func=lambda x: CONDITION_LABELS[x],
-            )
+            if training_type == "cylinder":
+                condition = st.selectbox(
+                    "Condición del cilindro *",
+                    options=VALID_CONDITIONS,
+                    format_func=lambda x: CONDITION_LABELS[x],
+                )
+            else:
+                # Para OCR, la condición no importa, forzamos 'correct'
+                # porque solo usamos este registro para entrenar la lectura
+                condition = "correct"
+                st.info(
+                    "🔤 Modo OCR — el registro se guarda con condición "
+                    "'correct' porque solo se usa para entrenar lectura."
+                )
 
             confidence = st.slider(
                 "Confianza de la etiqueta",
@@ -379,38 +421,65 @@ def page_upload():
                 help="Marca si un humano revisó esta etiqueta",
             )
 
-            # ── Razón (CRÍTICO para falsos positivos / falsos negativos) ───
+            # ── Código esperado (CRÍTICO para OCR) ────────────────────────
+            if training_type == "character":
+                expected_code = st.text_input(
+                    "🔤 ¿Qué carácter estás entrenando? *",
+                    max_chars=10,
+                    placeholder="D, 0, I, 1, B, 8, RJCD, etc.",
+                    help="Letra o número que se ve en la imagen recortada",
+                )
+                default_reason = f"Referencia OCR para carácter '{expected_code}'"
+            else:
+                expected_code = st.text_input(
+                    "🔢 Código serial esperado (opcional)",
+                    placeholder="Ej: RJCD-2045-UTB.THK.9.0",
+                    help=(
+                        "Si conoces el código real del cilindro, ingrésalo. "
+                        "El sistema valida si Gemini lo lee correctamente."
+                    ),
+                )
+                default_reason = ""
+
+            # ── Razón ─────────────────────────────────────────────────────
             reason = st.text_area(
-                "📝 Razón / justificación de la etiqueta",
-                value=st.session_state.get("upload_reason", ""),
+                "📝 Razón / justificación",
+                value=st.session_state.get("upload_reason", default_reason),
                 height=100,
                 key="upload_reason",
                 placeholder=(
                     "Ejemplos:\n"
-                    "• 'Estampado confundido con abolladura → es falso positivo'\n"
-                    "• 'Marca de fábrica, NO es daño'\n"
-                    "• 'Abolladura real en zona superior izquierda, ~3cm'\n"
-                    "• 'Cilindro en buen estado, superficie íntegra'"
+                    "• 'Referencia letra D troquelada Crosland'\n"
+                    "• 'Referencia número 0 industrial con diagonal interna'\n"
+                    "• 'Estampado confundido con abolladura → falso positivo'\n"
+                    "• 'Abolladura real en zona superior izquierda, ~3cm'"
                 ),
                 help=(
-                    "Esta razón se guarda como metadata y se inyecta en el "
-                    "contexto RAG al clasificar imágenes similares. Es "
-                    "CLAVE para corregir falsos positivos y falsos negativos."
+                    "Esta razón se inyecta en el contexto RAG al clasificar "
+                    "imágenes similares. Clave para falsos positivos/negativos "
+                    "y para enseñar caracteres conflictivos."
                 ),
             )
 
             uploaded = st.file_uploader(
-                "Imagen del cilindro *",
+                "Imagen *",
                 type=["jpg", "jpeg", "png", "bmp", "webp"],
+                help=(
+                    "Si es carácter: sube una imagen recortada del carácter. "
+                    "Si es cilindro: sube la imagen completa."
+                ),
             )
 
-            submitted = st.form_submit_button("📤 Subir imagen", type="primary",
-                                              use_container_width=True)
+            submitted = st.form_submit_button(
+                ("📤 Subir carácter" if training_type == "character"
+                 else "📤 Subir cilindro"),
+                type="primary", use_container_width=True,
+            )
 
     with col_preview:
         st.markdown("### 👁️ Vista previa")
         if uploaded is None:
-            st.info("👈 Selecciona una imagen para ver la vista previa aquí")
+            st.info("👈 Selecciona una imagen")
         else:
             st.image(uploaded, caption=uploaded.name, use_container_width=True)
             st.caption(f"Tamaño: {uploaded.size / 1024:.1f} KB · "
@@ -420,6 +489,10 @@ def page_upload():
         if uploaded is None:
             st.error("❌ Debes seleccionar una imagen")
             return
+        if training_type == "character" and not expected_code:
+            st.error("❌ Para entrenar un carácter debes indicar cuál es "
+                     "(campo '¿Qué carácter estás entrenando?')")
+            return
         try:
             with st.spinner("⏳ Procesando con Gemini y almacenando en Qdrant…"):
                 t0 = time.time()
@@ -428,24 +501,71 @@ def page_upload():
                     system_instruction=sys_instr_upload if sys_instr_upload else None,
                     reason=reason.strip() if reason else None,
                     temperature=temperature_upload,
+                    expected_code=expected_code.strip() if expected_code else None,
+                    training_type=training_type,
                 )
                 dt = time.time() - t0
 
-            st.success(f"✅ Imagen subida correctamente en {dt:.1f}s")
+            # ── Mostrar resultado ────────────────────────────────────────
+            training_label = (
+                "🔤 Carácter OCR" if training_type == "character"
+                else "🛢️ Cilindro completo"
+            )
+            st.success(f"✅ {training_label} guardado correctamente en {dt:.1f}s")
             st.markdown(f"""
                 <div class="match-card">
                     <div class="score">🆔 {data.get('point_id', '—')}</div>
                     <div style="margin-top:0.5rem;">
-                        <span class="condition-pill" style="background:{CONDITION_COLORS[condition]};">
-                            {CONDITION_LABELS[condition]}
+                        <span class="condition-pill" style="background:#3b82f6;">
+                            {training_label}
                         </span>
                         <span style="margin-left:1rem; color:#94a3b8;">
                             Confianza: {confidence:.0%}
                         </span>
                     </div>
-                    {f'<div style="margin-top:0.5rem; color:#94a3b8; font-size:0.9rem;">📝 {reason}</div>' if reason else ''}
                 </div>
             """, unsafe_allow_html=True)
+
+            # Mostrar código OCR extraído
+            extracted = data.get("extracted_code", "")
+            code_match = data.get("code_match")
+
+            if training_type == "character":
+                # En OCR es CRÍTICO ver si leyó bien
+                st.markdown("#### 🔍 Resultado OCR")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Carácter esperado", expected_code)
+                with c2:
+                    st.metric("Gemini leyó", extracted or "(nada)")
+                with c3:
+                    if code_match is True:
+                        st.success("✅ Match")
+                    elif code_match is False:
+                        st.error("❌ Diferente")
+                    else:
+                        st.warning("—")
+
+                if code_match is False:
+                    st.warning(
+                        f"⚠️ Gemini leyó **{extracted}** pero lo esperado "
+                        f"era **{expected_code}**. Sube otra imagen con "
+                        f"mejor enfoque o corrige el prompt."
+                    )
+            else:
+                # Cilindro: mostrar código extraído como referencia
+                if extracted:
+                    st.info(f"🔢 Código OCR extraído: **{extracted}**")
+                    if expected_code:
+                        if code_match is True:
+                            st.success("✅ Coincide con el código esperado")
+                        elif code_match is False:
+                            st.warning(
+                                f"⚠️ Gemini leyó **{extracted}** pero el código "
+                                f"esperado era **{expected_code}**"
+                            )
+                if reason:
+                    st.caption(f"📝 {reason}")
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
@@ -599,6 +719,8 @@ def render_classification(data: Dict[str, Any], dt: float):
     cond = cls["predicted_condition"]
     conf = cls["confidence"]
     is_conf = cls["is_confident"]
+    extracted_code = cls.get("extracted_code", "")
+    confidence_ocr = cls.get("confidence_ocr", 0.0)
 
     st.markdown(f"""
         <div class="match-card">
@@ -615,6 +737,19 @@ def render_classification(data: Dict[str, Any], dt: float):
             </div>
         </div>
     """, unsafe_allow_html=True)
+
+    # ── Código OCR extraído (destacado) ───────────────────────────────────
+    if extracted_code:
+        st.markdown("### 🔢 Código serial extraído por OCR")
+        c1, c2, c3 = st.columns([2, 1, 1])
+        with c1:
+            st.code(extracted_code, language="text")
+        with c2:
+            st.metric("Confianza OCR", f"{confidence_ocr:.0%}")
+        with c3:
+            st.metric("Longitud", f"{len(extracted_code)} chars")
+    else:
+        st.warning("⚠️ Gemini no detectó un código serial en esta imagen.")
 
     c1, c2 = st.columns(2)
 
