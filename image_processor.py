@@ -6,6 +6,7 @@ Usa google-genai SDK (nueva) + gemini-2.5-flash + gemini-embedding-2
 
 import os
 import io
+import json
 import base64
 import uuid
 import logging
@@ -167,8 +168,28 @@ class CylinderImageProcessor:
         "Responde en español de forma concisa y técnica."
     )
 
+    # Reglas de OCR que se inyectan en TODOS los prompts para que Gemini
+    # distinga correctamente letras vs números en códigos seriales.
+    OCR_RULES = (
+        "\n\nREGLAS DE LECTURA DE CARACTERES (OCR):\n"
+        "- 'D' es LETRA, NUNCA número. Identifícala por su lado plano vertical derecho.\n"
+        "- '0' es NÚMERO. Puede tener diagonal interna o forma ovalada.\n"
+        "- '1' es NÚMERO con base. 'I' es LETRA sin base ni remate.\n"
+        "- '8' es NÚMERO simétrico vertical. 'B' es LETRA asimétrica (arriba chica, abajo grande).\n"
+        "- '5' es NÚMERO con ángulos rectos en base. 'S' es LETRA curva.\n"
+        "- '2' es NÚMERO con base horizontal. 'Z' es LETRA con esquinas filosas.\n"
+        "- 'O' es LETRA ovalada. '0' es NÚMERO (más cuadrado en tipografía industrial).\n"
+        "- 'Q' es LETRA con cola inferior. '0' nunca tiene cola.\n"
+        "- 'G' es LETRA con gancho interno. '6' es NÚMERO con círculo cerrado abajo.\n\n"
+        "Si dudas entre letra y número en un carácter crítico, busca imágenes "
+        "de referencia en el contexto RAG para confirmar."
+    )
+
     # Temperatura baja para análisis más determinístico
     DEFAULT_TEMPERATURE = 0.2
+
+    # Tipos de entrenamiento permitidos al subir imágenes
+    TRAINING_TYPES = ("cylinder", "character")
 
     # ── Gemini Vision ─────────────────────────────────────────────────────
 
@@ -178,22 +199,25 @@ class CylinderImageProcessor:
         system_instruction: Optional[str] = None,
         user_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
-    ) -> str:
+        extract_code: bool = True,
+    ) -> Dict[str, Any]:
         """
-        Generar descripción detallada de la imagen con gemini-2.5-flash.
+        Generar descripción detallada + OCR del código del cilindro.
 
         Args:
             image:               Imagen a analizar
-            system_instruction:  Rol/instrucción de sistema (opcional).
-                                 Personaliza el comportamiento del modelo.
-                                 Si es None, usa DEFAULT_SYSTEM_INSTRUCTION.
-            user_prompt:         Prompt del usuario (opcional).
-                                 Si es None, usa DEFAULT_USER_PROMPT.
-            temperature:         Temperatura de generación (default 0.2).
-                                 Bajo = más determinístico.
+            system_instruction:  Rol/instrucción de sistema (opcional)
+            user_prompt:         Prompt del usuario (opcional)
+            temperature:         Temperatura de generación (default 0.2)
+            extract_code:        Si True, pide JSON con OCR estructurado.
+                                 Si False, devuelve solo texto libre.
 
         Returns:
-            str: Descripción generada por Gemini
+            dict con:
+                - description:     str (texto descriptivo)
+                - extracted_code:  str (código OCR, vacío si no se detecta)
+                - confidence_ocr:  float (confianza del OCR 0.0-1.0)
+                - raw:             str (respuesta cruda por si falla parsing)
         """
         try:
             pil_image = self._to_pil(image)
@@ -203,26 +227,82 @@ class CylinderImageProcessor:
             usr_prmpt = user_prompt or self.DEFAULT_USER_PROMPT
             temp      = temperature if temperature is not None else self.DEFAULT_TEMPERATURE
 
-            # generateContent requiere v1beta para soportar systemInstruction
+            # ── Modo OCR: pedir JSON estructurado ────────────────────────
+            if extract_code:
+                ocr_user_prompt = (
+                    usr_prmpt
+                    + self.OCR_RULES
+                    + "\n\nFORMATO DE RESPUESTA OBLIGATORIO (JSON estricto):\n"
+                    + "{\n"
+                    + '  "description": "<descripción técnica de la imagen en español>",\n'
+                    + '  "extracted_code": "<código serial completo tal como aparece en el cilindro, sin espacios>",\n'
+                    + '  "confidence_ocr": <número entre 0.0 y 1.0>\n'
+                    + "}\n\n"
+                    + "Reglas para 'extracted_code':\n"
+                    + "- Lee cada carácter con atención (distingue D de 0, I de 1, etc.)\n"
+                    + "- Si NO puedes leer ningún código, devuelve string vacío ''\n"
+                    + "- Mantén el orden EXACTO en que aparecen los caracteres\n"
+                    + "- NO agregues separadores que no estén en el original"
+                )
+                response = self.client_v1beta.models.generate_content(
+                    model=self.vision_model_id,
+                    contents=[
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                        types.Part.from_text(text=ocr_user_prompt),
+                    ],
+                    config=types.GenerateContentConfig(
+                        system_instruction=sys_instr,
+                        temperature=temp,
+                        response_mime_type="application/json",
+                    ),
+                )
+
+                raw = response.text.strip()
+                try:
+                    data = json.loads(raw)
+                    return {
+                        "description":    str(data.get("description", "")).strip(),
+                        "extracted_code": str(data.get("extracted_code", "")).strip(),
+                        "confidence_ocr": float(data.get("confidence_ocr", 0.0)),
+                        "raw":            raw,
+                    }
+                except Exception as parse_err:
+                    logger.warning(f"No se pudo parsear JSON, fallback a texto plano: {parse_err}")
+                    return {
+                        "description":    raw,
+                        "extracted_code": "",
+                        "confidence_ocr": 0.0,
+                        "raw":            raw,
+                    }
+
+            # ── Modo texto libre ──────────────────────────────────────────
             response = self.client_v1beta.models.generate_content(
                 model=self.vision_model_id,
                 contents=[
                     types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                    types.Part.from_text(text=usr_prmpt),
+                    types.Part.from_text(text=usr_prmpt + self.OCR_RULES),
                 ],
                 config=types.GenerateContentConfig(
                     system_instruction=sys_instr,
                     temperature=temp,
                 ),
             )
-
-            description = response.text.strip()
-            logger.debug(f"Descripción generada: {description[:120]}…")
-            return description
+            text = response.text.strip()
+            return {
+                "description":    text,
+                "extracted_code": "",
+                "confidence_ocr": 0.0,
+                "raw":            text,
+            }
 
         except Exception as e:
             logger.error(f"Error generando descripción: {e}")
-            return f"Error generando descripción: {e}"
+            return {
+                "description":    f"Error generando descripción: {e}",
+                "extracted_code": "",
+                "confidence_ocr": 0.0,
+                "raw":            str(e),
+            }
 
     # ── Gemini Embeddings ─────────────────────────────────────────────────
 
@@ -260,30 +340,40 @@ class CylinderImageProcessor:
         system_instruction: Optional[str] = None,
         user_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
-    ) -> Tuple[np.ndarray, str]:
+        extract_code: bool = True,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Pipeline completo: imagen → descripción (Gemini Vision) → embedding.
+        Pipeline completo: imagen → (descripción + OCR) → embedding.
 
         Args:
             image:              Imagen a procesar
             system_instruction: System instruction opcional para Gemini
             user_prompt:        Prompt de usuario opcional para Gemini
             temperature:        Temperatura de Gemini (default 0.2)
+            extract_code:       Si True, también extrae el código OCR
 
         Returns:
-            (embedding np.ndarray 3072d, descripción str)
+            (embedding np.ndarray 3072d, info_dict)
+            info_dict = {description, extracted_code, confidence_ocr, raw}
         """
-        logger.info("Paso 1/2 → Gemini Vision: generando descripción...")
-        description = self.get_image_description(
+        logger.info("Paso 1/2 → Gemini Vision: descripción + OCR...")
+        info = self.get_image_description(
             image, system_instruction=system_instruction,
             user_prompt=user_prompt, temperature=temperature,
+            extract_code=extract_code,
         )
 
         logger.info("Paso 2/2 → Gemini Embeddings: vectorizando descripción...")
-        embedding = self.generate_embedding(description)
+        # El embedding se genera SOLO sobre la descripción (no el código)
+        # porque el código tiene campo dedicado y no debe contaminar el
+        # espacio vectorial con texto estructurado.
+        embedding = self.generate_embedding(info["description"])
 
-        logger.info(f"Pipeline RAG completado | dim={embedding.shape[0]}")
-        return embedding, description
+        logger.info(
+            f"Pipeline RAG completado | dim={embedding.shape[0]} | "
+            f"código='{info['extracted_code']}'"
+        )
+        return embedding, info
 
     def upload_image(
         self,
@@ -297,7 +387,9 @@ class CylinderImageProcessor:
         user_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         reason: Optional[str] = None,
-    ) -> str:
+        expected_code: Optional[str] = None,
+        training_type: str = "cylinder",
+    ) -> Dict[str, Any]:
         """
         Procesar imagen y almacenarla en Qdrant Cloud.
 
@@ -311,21 +403,32 @@ class CylinderImageProcessor:
             system_instruction: System instruction opcional para Gemini
             user_prompt:        Prompt de usuario opcional para Gemini
             temperature:        Temperatura de Gemini (default 0.2)
-            reason:             Razón de la clasificación (ej: 'Estampado '
-                                'confundido con abolladura, es falso positivo').
-                                Importante para entrenar el RAG en falsos
-                                positivos/negativos.
+            reason:             Razón de la clasificación
+            expected_code:      Código serial esperado (validación humana).
+                                Para training_type='character' indica qué
+                                carácter está entrenando (ej: 'D', '0').
+            training_type:      'cylinder' = cilindro completo (default).
+                                'character' = imagen recortada de UN carácter
+                                individual para entrenar OCR.
 
         Returns:
-            str: UUID del punto insertado en Qdrant
+            dict con:
+                - point_id:       str (UUID del punto insertado)
+                - extracted_code: str (código OCR detectado)
+                - code_match:     bool/None (True si coincide con expected_code)
         """
         if cylinder_condition not in self.categories:
             raise ValueError(
                 f"Categoría inválida '{cylinder_condition}'. "
                 f"Opciones: {list(self.categories.keys())}"
             )
+        if training_type not in self.TRAINING_TYPES:
+            raise ValueError(
+                f"training_type inválido '{training_type}'. "
+                f"Opciones: {self.TRAINING_TYPES}"
+            )
 
-        embedding, description = self.process_image_for_rag(
+        embedding, info = self.process_image_for_rag(
             image, system_instruction=system_instruction,
             user_prompt=user_prompt, temperature=temperature,
         )
@@ -335,15 +438,27 @@ class CylinderImageProcessor:
         payload = {
             "cylinder_condition":    cylinder_condition,
             "condition_description": self.categories[cylinder_condition],
-            "description":           description,
+            "description":           info["description"],
+            "extracted_code":        info["extracted_code"],
+            "confidence_ocr":        info["confidence_ocr"],
             "confidence_score":      float(confidence_score),
             "upload_timestamp":      datetime.now().isoformat(),
             "source":                source,
             "verified":              verified,
+            "training_type":         training_type,
             "embedding_model":       EMBEDDING_MODEL,
             "vision_model":          VISION_MODEL,
             "vector_size":           int(embedding.shape[0]),
         }
+
+        # Si el humano proporcionó el código esperado, validar match
+        code_match = None
+        if expected_code:
+            payload["expected_code"] = expected_code.strip()
+            code_match = (
+                payload["extracted_code"].upper() == expected_code.strip().upper()
+            )
+            payload["code_match"] = code_match
 
         # Guardar razón como metadata para que el RAG la use en futuras
         # clasificaciones (clave para falsos positivos / falsos negativos)
@@ -358,8 +473,15 @@ class CylinderImageProcessor:
             points=[PointStruct(id=point_id, vector=embedding.tolist(), payload=payload)],
         )
 
-        logger.info(f"Imagen almacenada | id={point_id} | condición={cylinder_condition}")
-        return point_id
+        logger.info(
+            f"Imagen almacenada | id={point_id} | tipo={training_type} | "
+            f"condición={cylinder_condition} | código OCR='{info['extracted_code']}'"
+        )
+        return {
+            "point_id":       point_id,
+            "extracted_code": info["extracted_code"],
+            "code_match":     code_match,
+        }
 
     def search_similar_images(
         self,
@@ -437,11 +559,15 @@ class CylinderImageProcessor:
         Returns:
             Dict con predicted_condition, confidence, description, rag_explanation, …
         """
-        # ── 1. Describir imagen de entrada ────────────────────────────────
-        description = self.get_image_description(
+        # ── 1. Describir imagen + extraer código OCR ──────────────────────
+        info = self.get_image_description(
             image, system_instruction=system_instruction,
             user_prompt=user_prompt, temperature=temperature,
+            extract_code=True,
         )
+        description    = info["description"]
+        extracted_code = info["extracted_code"]
+        confidence_ocr = info["confidence_ocr"]
 
         # ── 2. Recuperar contexto de Qdrant ───────────────────────────────
         similar_images = self.search_similar_images(
@@ -456,6 +582,8 @@ class CylinderImageProcessor:
                 "confidence":          0.0,
                 "is_confident":        False,
                 "description":         description,
+                "extracted_code":      extracted_code,
+                "confidence_ocr":      confidence_ocr,
                 "rag_explanation":     "No hay imágenes de referencia en la base de datos.",
                 "similar_images_count": 0,
             }
@@ -478,8 +606,12 @@ class CylinderImageProcessor:
         def _format_context_line(h):
             cond = h["metadata"]["cylinder_condition"]
             desc = h["metadata"].get("description", "")[:120]
+            code = h["metadata"].get("extracted_code", "")
             reason = h["metadata"].get("reason", "")
-            line = f"- Similitud {h['score']:.2f}: {cond} | {desc}"
+            line = f"- Similitud {h['score']:.2f}: {cond}"
+            if code:
+                line += f" | código='{code}'"
+            line += f" | {desc}"
             if reason:
                 line += f"\n    ⚠ Razón registrada: {reason}"
             return line
@@ -492,6 +624,8 @@ class CylinderImageProcessor:
 
         rag_prompt = (
             f"Descripción de la imagen analizada:\n{description}\n\n"
+            f"Código extraído por OCR: '{extracted_code}' "
+            f"(confianza OCR: {confidence_ocr:.0%})\n\n"
             f"Ejemplos similares encontrados en la base de datos:\n{context_lines}\n\n"
             f"Clasificación automática: '{predicted}' (confianza {confidence:.0%}).\n\n"
             f"Si alguno de los ejemplos tiene 'Razón registrada', úsala como pista: "
@@ -521,6 +655,8 @@ class CylinderImageProcessor:
             "confidence":           float(confidence),
             "is_confident":         confidence >= confidence_threshold,
             "description":          description,
+            "extracted_code":       extracted_code,
+            "confidence_ocr":       confidence_ocr,
             "rag_explanation":      rag_explanation,
             "condition_scores":     votes,
             "similar_images_count": len(similar_images),

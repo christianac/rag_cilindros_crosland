@@ -114,6 +114,8 @@ def process_image():
         user_prompt = data.get("user_prompt")  # opcional
         reason = data.get("reason")  # opcional: razon del falso positivo/negativo
         temperature = data.get("temperature")  # opcional: default 0.2
+        expected_code = data.get("expected_code")  # opcional: codigo serial esperado
+        training_type = data.get("training_type", "cylinder")  # 'cylinder' | 'character'
 
         # Decodificar imagen base64
         try:
@@ -124,7 +126,7 @@ def process_image():
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
 
         # Subir imagen usando Gemini
-        point_id = processor.upload_image(
+        result = processor.upload_image(
             image=image_bytes,
             cylinder_condition=cylinder_condition,
             confidence_score=confidence_score,
@@ -135,14 +137,22 @@ def process_image():
             user_prompt=user_prompt,
             reason=reason,
             temperature=temperature,
+            expected_code=expected_code,
+            training_type=training_type,
         )
-        
-        logger.info(f"Imagen procesada con Gemini exitosamente: {point_id}")
-        
+
+        logger.info(
+            f"Imagen procesada con Gemini exitosamente: {result['point_id']} "
+            f"(tipo={training_type})"
+        )
+
         return jsonify({
-            "success": True,
-            "point_id": point_id,
-            "message": "Imagen procesada y almacenada exitosamente con Gemini",
+            "success":         True,
+            "point_id":        result["point_id"],
+            "extracted_code":  result["extracted_code"],
+            "code_match":      result["code_match"],
+            "training_type":   training_type,
+            "message":         "Imagen procesada y almacenada exitosamente con Gemini",
             "cylinder_condition": cylinder_condition,
             "confidence_score": confidence_score,
             "embedding_model": processor.embedding_model,
