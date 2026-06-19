@@ -112,36 +112,66 @@ class CylinderImageProcessor:
         pil_image.save(buf, format=fmt)
         return buf.getvalue()
 
+    # ── Prompt por defecto ────────────────────────────────────────────────
+    DEFAULT_SYSTEM_INSTRUCTION = (
+        "Eres un inspector experto de cilindros industriales. "
+        "Analiza la imagen con foco en detectar abolladuras, golpes, "
+        "deformaciones y cualquier daño visible en la superficie. "
+        "Sé estricto: si dudas si hay daño, indícalo explícitamente."
+    )
+
+    DEFAULT_USER_PROMPT = (
+        "Analiza esta imagen de un cilindro industrial en detalle. "
+        "Describe específicamente:\n"
+        "1. El estado general del cilindro\n"
+        "2. Si tiene abolladuras, golpes o deformaciones visibles "
+        "(indica su ubicación aproximada y tamaño)\n"
+        "3. Si la superficie parece dañada o en buen estado\n"
+        "4. Color, forma y características visibles\n"
+        "5. Cualquier detalle relevante sobre su condición\n\n"
+        "Responde en español de forma concisa y técnica."
+    )
+
     # ── Gemini Vision ─────────────────────────────────────────────────────
 
-    def get_image_description(self, image: Union[str, Image.Image, bytes]) -> str:
+    def get_image_description(
+        self,
+        image: Union[str, Image.Image, bytes],
+        system_instruction: Optional[str] = None,
+        user_prompt: Optional[str] = None,
+    ) -> str:
         """
         Generar descripción detallada de la imagen con gemini-2.5-flash.
 
-        Usa client.models.generate_content() según la nueva SDK.
+        Args:
+            image:               Imagen a analizar
+            system_instruction:  Rol/instrucción de sistema (opcional).
+                                 Personaliza el comportamiento del modelo.
+                                 Si es None, usa DEFAULT_SYSTEM_INSTRUCTION.
+            user_prompt:         Prompt del usuario (opcional).
+                                 Si es None, usa DEFAULT_USER_PROMPT.
+
+        Returns:
+            str: Descripción generada por Gemini
         """
         try:
             pil_image = self._to_pil(image)
             img_bytes  = self._pil_to_bytes(pil_image)
 
-            prompt = (
-                "Analiza esta imagen de un cilindro industrial en detalle. "
-                "Describe específicamente:\n"
-                "1. El estado general del cilindro\n"
-                "2. Si tiene abolladuras, golpes o deformaciones visibles\n"
-                "3. Si la superficie parece dañada o en buen estado\n"
-                "4. Color, forma y características visibles\n"
-                "5. Cualquier detalle relevante sobre su condición\n\n"
-                "Responde en español de forma concisa y técnica."
-            )
+            sys_instr = system_instruction or self.DEFAULT_SYSTEM_INSTRUCTION
+            usr_prmpt = user_prompt or self.DEFAULT_USER_PROMPT
 
             # Nueva SDK: client.models.generate_content()
+            # system_instruction va como config; user_prompt + imagen como contents
             response = self.client.models.generate_content(
                 model=self.vision_model_id,
                 contents=[
                     types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                    types.Part.from_text(text=prompt),
-                ]
+                    types.Part.from_text(text=usr_prmpt),
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=sys_instr,
+                ),
             )
 
             description = response.text.strip()
@@ -183,16 +213,26 @@ class CylinderImageProcessor:
     # ── Pipeline RAG ──────────────────────────────────────────────────────
 
     def process_image_for_rag(
-        self, image: Union[str, Image.Image, bytes]
+        self,
+        image: Union[str, Image.Image, bytes],
+        system_instruction: Optional[str] = None,
+        user_prompt: Optional[str] = None,
     ) -> Tuple[np.ndarray, str]:
         """
         Pipeline completo: imagen → descripción (Gemini Vision) → embedding.
+
+        Args:
+            image:              Imagen a procesar
+            system_instruction: System instruction opcional para Gemini
+            user_prompt:        Prompt de usuario opcional para Gemini
 
         Returns:
             (embedding np.ndarray 3072d, descripción str)
         """
         logger.info("Paso 1/2 → Gemini Vision: generando descripción...")
-        description = self.get_image_description(image)
+        description = self.get_image_description(
+            image, system_instruction=system_instruction, user_prompt=user_prompt
+        )
 
         logger.info("Paso 2/2 → Gemini Embeddings: vectorizando descripción...")
         embedding = self.generate_embedding(description)
@@ -208,6 +248,8 @@ class CylinderImageProcessor:
         source: str = "manual",
         verified: bool = True,
         additional_metadata: Optional[Dict] = None,
+        system_instruction: Optional[str] = None,
+        user_prompt: Optional[str] = None,
     ) -> str:
         """
         Procesar imagen y almacenarla en Qdrant Cloud.
@@ -219,6 +261,8 @@ class CylinderImageProcessor:
             source:             Origen del dato (n8n, manual, training…)
             verified:           Si fue verificado por un humano
             additional_metadata: Metadatos extra a guardar
+            system_instruction: System instruction opcional para Gemini
+            user_prompt:        Prompt de usuario opcional para Gemini
 
         Returns:
             str: UUID del punto insertado en Qdrant
@@ -229,7 +273,9 @@ class CylinderImageProcessor:
                 f"Opciones: {list(self.categories.keys())}"
             )
 
-        embedding, description = self.process_image_for_rag(image)
+        embedding, description = self.process_image_for_rag(
+            image, system_instruction=system_instruction, user_prompt=user_prompt
+        )
 
         point_id = str(uuid.uuid4())
 
@@ -262,20 +308,26 @@ class CylinderImageProcessor:
         limit: int = 5,
         score_threshold: float = 0.5,
         filter_condition: Optional[str] = None,
+        system_instruction: Optional[str] = None,
+        user_prompt: Optional[str] = None,
     ) -> List[Dict]:
         """
         Buscar imágenes similares por similitud coseno en Qdrant.
 
         Args:
-            query_image:      Imagen de consulta
-            limit:            Máximo de resultados
-            score_threshold:  Similitud mínima
-            filter_condition: Filtrar por 'correct' | 'dented' | 'false_positive'
+            query_image:        Imagen de consulta
+            limit:              Máximo de resultados
+            score_threshold:    Similitud mínima
+            filter_condition:   Filtrar por 'correct' | 'dented' | 'false_positive'
+            system_instruction: System instruction opcional para Gemini
+            user_prompt:        Prompt de usuario opcional para Gemini
 
         Returns:
             Lista de dicts con {id, score, metadata}
         """
-        query_embedding, _ = self.process_image_for_rag(query_image)
+        query_embedding, _ = self.process_image_for_rag(
+            query_image, system_instruction=system_instruction, user_prompt=user_prompt
+        )
 
         query_filter = None
         if filter_condition:
@@ -301,6 +353,8 @@ class CylinderImageProcessor:
         self,
         image: Union[str, Image.Image, bytes],
         confidence_threshold: float = 0.8,
+        system_instruction: Optional[str] = None,
+        user_prompt: Optional[str] = None,
     ) -> Dict:
         """
         Clasificar estado del cilindro mediante RAG (votación ponderada).
@@ -311,16 +365,21 @@ class CylinderImageProcessor:
         Args:
             image:                Imagen a clasificar
             confidence_threshold: Umbral mínimo para considerar la predicción confiable
+            system_instruction:   System instruction opcional para Gemini
+            user_prompt:          Prompt de usuario opcional para Gemini
 
         Returns:
             Dict con predicted_condition, confidence, description, rag_explanation, …
         """
         # ── 1. Describir imagen de entrada ────────────────────────────────
-        description = self.get_image_description(image)
+        description = self.get_image_description(
+            image, system_instruction=system_instruction, user_prompt=user_prompt
+        )
 
         # ── 2. Recuperar contexto de Qdrant ───────────────────────────────
         similar_images = self.search_similar_images(
-            query_image=image, limit=10, score_threshold=0.4
+            query_image=image, limit=10, score_threshold=0.4,
+            system_instruction=system_instruction, user_prompt=user_prompt,
         )
 
         if not similar_images:
@@ -351,8 +410,12 @@ class CylinderImageProcessor:
             f"| {h['metadata'].get('description', '')[:120]}"
             for h in similar_images[:5]
         )
+        # Usar el system_instruction del usuario si existe; si no, el default
+        sys_instr = system_instruction or (
+            "Eres un experto en inspección de cilindros industriales. "
+            "Analiza con foco en detectar abolladuras, golpes y deformaciones."
+        )
         rag_prompt = (
-            f"Eres un experto en inspección de cilindros industriales.\n\n"
             f"Descripción de la imagen analizada:\n{description}\n\n"
             f"Ejemplos similares encontrados en la base de datos:\n{context_lines}\n\n"
             f"Clasificación automática: '{predicted}' (confianza {confidence:.0%}).\n\n"
@@ -364,6 +427,9 @@ class CylinderImageProcessor:
             rag_response = self.client.models.generate_content(
                 model=self.vision_model_id,
                 contents=rag_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=sys_instr,
+                ),
             )
             rag_explanation = rag_response.text.strip()
         except Exception as e:

@@ -92,24 +92,46 @@ class _ApiClient:
     def health(self)   -> Dict[str, Any]: return self._get("/health")
     def stats(self)    -> Dict[str, Any]: return self._get("/stats")["stats"]
     def upload(self, file_bytes: bytes, condition: str,
-               confidence: float, verified: bool) -> Dict[str, Any]:
-        return self._post("/process-image", {
+               confidence: float, verified: bool,
+               system_instruction: Optional[str] = None,
+               user_prompt: Optional[str] = None) -> Dict[str, Any]:
+        body = {
             "image_data":         self._encode(file_bytes),
             "cylinder_condition": condition,
             "confidence_score":   confidence,
             "source_info":        {"source": "gui", "verified": verified},
-        })
-    def classify(self, file_bytes: bytes, threshold: float) -> Dict[str, Any]:
-        return self._post("/classify-image", {
+        }
+        if system_instruction:
+            body["system_instruction"] = system_instruction
+        if user_prompt:
+            body["user_prompt"] = user_prompt
+        return self._post("/process-image", body)
+
+    def classify(self, file_bytes: bytes, threshold: float,
+                 system_instruction: Optional[str] = None,
+                 user_prompt: Optional[str] = None) -> Dict[str, Any]:
+        body = {
             "image_data":          self._encode(file_bytes),
             "confidence_threshold": threshold,
-        })
+        }
+        if system_instruction:
+            body["system_instruction"] = system_instruction
+        if user_prompt:
+            body["user_prompt"] = user_prompt
+        return self._post("/classify-image", body)
+
     def search(self, file_bytes: bytes, limit: int,
-               threshold: float, filter_cond: Optional[str]) -> Dict[str, Any]:
+               threshold: float, filter_cond: Optional[str],
+               system_instruction: Optional[str] = None,
+               user_prompt: Optional[str] = None) -> Dict[str, Any]:
         body = {"image_data": self._encode(file_bytes), "limit": limit,
                 "score_threshold": threshold}
         if filter_cond:
             body["filter_condition"] = filter_cond
+        if system_instruction:
+            body["system_instruction"] = system_instruction
+        if user_prompt:
+            body["user_prompt"] = user_prompt
         return self._post("/search-similar", body)
 
 
@@ -144,26 +166,39 @@ class _DirectClient:
         }
 
     def upload(self, file_bytes: bytes, condition: str,
-               confidence: float, verified: bool) -> Dict[str, Any]:
+               confidence: float, verified: bool,
+               system_instruction: Optional[str] = None,
+               user_prompt: Optional[str] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         pid = self.proc.upload_image(
             image=pil, cylinder_condition=condition,
             confidence_score=confidence, source="gui", verified=verified,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
         )
         return {"success": True, "point_id": pid}
 
-    def classify(self, file_bytes: bytes, threshold: float) -> Dict[str, Any]:
+    def classify(self, file_bytes: bytes, threshold: float,
+                 system_instruction: Optional[str] = None,
+                 user_prompt: Optional[str] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        result = self.proc.classify_cylinder(image=pil,
-                                             confidence_threshold=threshold)
+        result = self.proc.classify_cylinder(
+            image=pil, confidence_threshold=threshold,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
+        )
         return {"success": True, "classification": result}
 
     def search(self, file_bytes: bytes, limit: int,
-               threshold: float, filter_cond: Optional[str]) -> Dict[str, Any]:
+               threshold: float, filter_cond: Optional[str],
+               system_instruction: Optional[str] = None,
+               user_prompt: Optional[str] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         hits = self.proc.search_similar_images(
             query_image=pil, limit=limit,
             score_threshold=threshold, filter_condition=filter_cond,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
         )
         return {"success": True, "similar_images": hits, "count": len(hits)}
 
@@ -349,6 +384,53 @@ def page_classify():
                 min_value=0.0, max_value=1.0, value=0.7, step=0.05,
                 help="Si la confianza es menor, se marca como 'requiere revisión'",
             )
+
+            # ── System instruction (configurable) ─────────────────────────
+            with st.expander("🧠 System instruction (opcional)", expanded=False):
+                preset = st.selectbox(
+                    "Preset",
+                    ["(usar default)", "Estricto (abolladuras)", "Permisivo",
+                     "Solo daños evidentes", "Personalizado"],
+                    help="Define cómo Gemini analiza la imagen",
+                )
+                default_text = {
+                    "(usar default)":      "",
+                    "Estricto (abolladuras)":
+                        "Eres un inspector MUY ESTRICTO de cilindros industriales. "
+                        "Considera CUALQUIER irregularidad en la superficie, "
+                        "por mínima que sea, como posible abolladura. "
+                        "Es preferible un falso positivo a pasar por alto un daño real. "
+                        "Busca específicamente: hundimientos, golpes, deformaciones, "
+                        "marcas de impacto, abolladuras pequeñas, medianas o grandes, "
+                        "y cualquier desviación respecto a una superficie cilíndrica perfecta.",
+                    "Permisivo":
+                        "Eres un inspector PERMISIVO. Solo marca como dañado si el daño "
+                        "es claramente visible y significativo. Marcas menores o sombras "
+                        "no deben clasificarse como abolladuras.",
+                    "Solo daños evidentes":
+                        "Eres un inspector moderado. Clasifica como 'dented' únicamente "
+                        "daños que serían rechazados en una inspección de calidad estándar. "
+                        "Daños cosméticos menores no cuentan.",
+                    "Personalizado": "",
+                }[preset]
+
+                if preset == "Personalizado":
+                    sys_instr = st.text_area(
+                        "Escribe tu instrucción personalizada:",
+                        value=st.session_state.get("custom_sys_instr_classify", ""),
+                        height=120,
+                        placeholder="Ej: Detecta solo abolladuras mayores a 2cm...",
+                    )
+                    st.session_state["custom_sys_instr_classify"] = sys_instr
+                else:
+                    sys_instr = default_text
+                    st.text_area(
+                        "Instrucción que se enviará a Gemini:",
+                        value=default_text or "(vacío → usa default)",
+                        height=120,
+                        disabled=True,
+                    )
+
             uploaded = st.file_uploader(
                 "Imagen a clasificar",
                 type=["jpg", "jpeg", "png", "bmp", "webp"],
@@ -370,7 +452,11 @@ def page_classify():
         try:
             with st.spinner("⏳ Analizando imagen y buscando similares…"):
                 t0 = time.time()
-                data = client.classify(uploaded.getvalue(), threshold)
+                data = client.classify(
+                    uploaded.getvalue(),
+                    threshold,
+                    system_instruction=sys_instr if sys_instr else None,
+                )
                 dt = time.time() - t0
             render_classification(data, dt)
         except Exception as e:
@@ -442,6 +528,15 @@ def page_search():
                 format_func=lambda x: CONDITION_LABELS.get(x, x),
             )
 
+        # System instruction opcional también en búsqueda
+        sys_instr_search = st.text_input(
+            "🧠 System instruction (opcional)",
+            value=st.session_state.get("custom_sys_instr_search", ""),
+            placeholder="Deja vacío para usar el default",
+            help="Personaliza cómo Gemini analiza la imagen antes de buscar similares",
+        )
+        st.session_state["custom_sys_instr_search"] = sys_instr_search
+
         uploaded = st.file_uploader(
             "Imagen de consulta",
             type=["jpg", "jpeg", "png", "bmp", "webp"],
@@ -458,7 +553,10 @@ def page_search():
         try:
             with st.spinner("⏳ Buscando similares…"):
                 fcond = None if filter_cond == "(todas)" else filter_cond
-                data = client.search(uploaded.getvalue(), limit, threshold, fcond)
+                data = client.search(
+                    uploaded.getvalue(), limit, threshold, fcond,
+                    system_instruction=sys_instr_search if sys_instr_search else None,
+                )
             render_search_results(data)
         except Exception as e:
             st.error(f"❌ Error: {e}")

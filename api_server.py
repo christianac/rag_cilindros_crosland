@@ -110,7 +110,9 @@ def process_image():
         cylinder_condition = data["cylinder_condition"]
         confidence_score = data.get("confidence_score", 1.0)
         source_info = data.get("source_info", {})
-        
+        system_instruction = data.get("system_instruction")  # opcional
+        user_prompt = data.get("user_prompt")  # opcional
+
         # Decodificar imagen base64
         try:
             if image_data.startswith('data:'):
@@ -118,7 +120,7 @@ def process_image():
             image_bytes = base64.b64decode(image_data)
         except Exception as e:
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
-        
+
         # Subir imagen usando Gemini
         point_id = processor.upload_image(
             image=image_bytes,
@@ -126,7 +128,9 @@ def process_image():
             confidence_score=confidence_score,
             source="n8n",
             verified=False,
-            additional_metadata=source_info
+            additional_metadata=source_info,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
         )
         
         logger.info(f"Imagen procesada con Gemini exitosamente: {point_id}")
@@ -168,18 +172,22 @@ def classify_image():
         # Decodificar imagen
         image_data = data["image_data"]
         confidence_threshold = data.get("confidence_threshold", 0.8)
-        
+        system_instruction = data.get("system_instruction")  # opcional
+        user_prompt = data.get("user_prompt")  # opcional
+
         try:
             if image_data.startswith('data:'):
                 image_data = image_data.split(',')[1]
             image_bytes = base64.b64decode(image_data)
         except Exception as e:
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
-        
+
         # Clasificar imagen usando Gemini
         classification_result = processor.classify_cylinder(
             image=image_bytes,
-            confidence_threshold=confidence_threshold
+            confidence_threshold=confidence_threshold,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
         )
         
         logger.info(f"Imagen clasificada con Gemini: {classification_result['predicted_condition']}")
@@ -221,20 +229,24 @@ def search_similar():
         limit = data.get("limit", 5)
         score_threshold = data.get("score_threshold", 0.5)
         filter_condition = data.get("filter_condition")
-        
+        system_instruction = data.get("system_instruction")  # opcional
+        user_prompt = data.get("user_prompt")  # opcional
+
         try:
             if image_data.startswith('data:'):
                 image_data = image_data.split(',')[1]
             image_bytes = base64.b64decode(image_data)
         except Exception as e:
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
-        
+
         # Buscar imágenes similares usando Gemini
         similar_images = processor.search_similar_images(
             query_image=image_bytes,
             limit=limit,
             score_threshold=score_threshold,
-            filter_condition=filter_condition
+            filter_condition=filter_condition,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
         )
         
         logger.info(f"Encontradas {len(similar_images)} imágenes similares")
