@@ -16,6 +16,7 @@ IMPORTANTE (Cloud Run):
 import os
 import logging
 import threading
+from typing import Any, Dict, Optional
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import base64
