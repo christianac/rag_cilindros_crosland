@@ -1,0 +1,42 @@
+# Control de versiones
+.git
+.gitignore
+
+# Secretos — NUNCA dentro de la imagen
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archivos personales
+*.pdf
+*.log
+logs/
+
+# Entornos virtuales locales
+venv/
+env/
+.venv/
+
+# Lanzadores locales (no necesarios en la imagen)
+run_gui.bat
+run_gui.sh
+test_system.py

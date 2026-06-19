@@ -289,30 +289,21 @@ def internal_error(error):
     return jsonify({"error": "Error interno del servidor"}), 500
 
 if __name__ == '__main__':
-    # Configuración del servidor
-    host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", "5000"))
+    host  = os.getenv("API_HOST", "0.0.0.0")
+    # Cloud Run inyecta PORT=8080; en local usamos API_PORT o 5000
+    port  = int(os.getenv("PORT", os.getenv("API_PORT", "5000")))
     debug = os.getenv("API_DEBUG", "False").lower() == "true"
-    
-    # Verificar configuración antes de iniciar
+
     print("=== Iniciando API Server ===")
     print(f"Host: {host}:{port}")
-    print(f"Gemini API Key: {'✓ Configurada' if os.getenv('GEMINI_API_KEY') else '✗ Falta'}")
-    print(f"Qdrant Cloud URL: {'✓ Configurada' if os.getenv('QDRANT_CLOUD_URL') else '✗ Falta'}")
-    print(f"Qdrant API Key: {'✓ Configurada' if os.getenv('QDRANT_API_KEY') else '✗ Falta'}")
+    print(f"Gemini API Key:   {'✓' if os.getenv('GEMINI_API_KEY')   else '✗ Falta'}")
+    print(f"Qdrant Cloud URL: {'✓' if os.getenv('QDRANT_CLOUD_URL') else '✗ Falta'}")
+    print(f"Qdrant API Key:   {'✓' if os.getenv('QDRANT_API_KEY')   else '✗ Falta'}")
     print("=" * 40)
-    
-    if not os.getenv("GEMINI_API_KEY"):
-        print("⚠️  ADVERTENCIA: GEMINI_API_KEY no está configurada")
-    if not os.getenv("QDRANT_CLOUD_URL"):
-        print("⚠️  ADVERTENCIA: QDRANT_CLOUD_URL no está configurada")
-    
+
     if processor is None:
         print("❌ ERROR: No se pudo inicializar el procesador")
-        print("Verifica las variables de entorno")
         exit(1)
-    
+
     print("✅ Servidor listo")
-    print(f"\nIniciando en {host}:{port}...")
-    
     app.run(host=host, port=port, debug=debug)

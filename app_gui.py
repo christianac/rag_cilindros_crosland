@@ -37,6 +37,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# API_URL debe apuntar al servicio rag-api:
+#   - En Cloud Run GUI: URL pública del servicio rag-api
+#     Ej: https://rag-api-xxxx-uc.a.run.app
+#   - En local: http://localhost:5000
 DEFAULT_API_URL = os.getenv("API_URL", "http://localhost:5000")
 VALID_CONDITIONS = ["correct", "dented", "false_positive"]
 CONDITION_LABELS = {

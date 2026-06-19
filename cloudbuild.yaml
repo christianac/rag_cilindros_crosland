@@ -1,0 +1,142 @@
+# cloudbuild.yaml
+# Construye y despliega 2 servicios Cloud Run independientes:
+#   rag-api  → Flask API       (Dockerfile.api)
+#   rag-gui  → Streamlit GUI   (Dockerfile.gui)
+#
+# Substitutions que debes configurar en Cloud Build:
+#   _REGION       : us-central1
+#   _REPO_NAME    : rag-cilindros-repo   (Artifact Registry)
+#   _API_SERVICE  : rag-api
+#   _GUI_SERVICE  : rag-gui
+#
+# Secrets en Secret Manager (crear antes del primer deploy):
+#   GEMINI_API_KEY, QDRANT_CLOUD_URL, QDRANT_API_KEY
+
+substitutions:
+  _REGION:      us-central1
+  _REPO_NAME:   rag-cilindros-repo
+  _API_SERVICE: rag-api
+  _GUI_SERVICE: rag-gui
+
+steps:
+
+  # ════════════════════════════════════════════════════════════
+  # BLOQUE 1 — API (Flask)
+  # ════════════════════════════════════════════════════════════
+
+  - name: gcr.io/cloud-builders/docker
+    id: build-api
+    args:
+      - build
+      - -f
+      - Dockerfile.api
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_API_SERVICE}:${SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_API_SERVICE}:latest
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-api
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_API_SERVICE}
+    waitFor: [build-api]
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: deploy-api
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_API_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_API_SERVICE}:${SHORT_SHA}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=5000
+      - --memory=2Gi
+      - --cpu=2
+      - --timeout=300
+      - --concurrency=80
+      - --min-instances=0
+      - --max-instances=10
+      - --set-secrets=GEMINI_API_KEY=GEMINI_API_KEY:latest
+      - --set-secrets=QDRANT_CLOUD_URL=QDRANT_CLOUD_URL:latest
+      - --set-secrets=QDRANT_API_KEY=QDRANT_API_KEY:latest
+      - --set-env-vars=PYTHONUNBUFFERED=1
+    waitFor: [push-api]
+
+  # ════════════════════════════════════════════════════════════
+  # BLOQUE 2 — GUI (Streamlit)
+  # Necesita la URL del servicio API ya desplegado
+  # ════════════════════════════════════════════════════════════
+
+  - name: gcr.io/cloud-builders/docker
+    id: build-gui
+    args:
+      - build
+      - -f
+      - Dockerfile.gui
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_GUI_SERVICE}:${SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_GUI_SERVICE}:latest
+      - .
+    # Se puede construir en paralelo con la API
+    waitFor: ["-"]
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-gui
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_GUI_SERVICE}
+    waitFor: [build-gui]
+
+  # Obtener la URL del servicio API recién desplegado
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: get-api-url
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        API_URL=$(gcloud run services describe ${_API_SERVICE} \
+          --region=${_REGION} \
+          --format='value(status.url)')
+        echo "API URL: $API_URL"
+        echo $API_URL > /workspace/api_url.txt
+    waitFor: [deploy-api]
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: deploy-gui
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        API_URL=$(cat /workspace/api_url.txt)
+        gcloud run deploy ${_GUI_SERVICE} \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_GUI_SERVICE}:${SHORT_SHA} \
+          --region=${_REGION} \
+          --platform=managed \
+          --allow-unauthenticated \
+          --port=8501 \
+          --memory=1Gi \
+          --cpu=1 \
+          --timeout=300 \
+          --concurrency=40 \
+          --min-instances=0 \
+          --max-instances=5 \
+          --set-env-vars="API_URL=$${API_URL},PYTHONUNBUFFERED=1"
+    waitFor: [push-gui, get-api-url]
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_API_SERVICE}:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_API_SERVICE}:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_GUI_SERVICE}:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_GUI_SERVICE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8

@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.api — Servicio Flask (RAG API)
+# Cloud Run: rag-api
+# Puerto: 5000 (Cloud Run lo mapea al 8080 externo)
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# Dependencias del sistema (Pillow necesita libgl)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dependencias Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Código fuente (solo lo necesario para la API)
+COPY api_server.py .
+COPY image_processor.py .
+COPY qdrant_setup.py .
+
+ENV PYTHONUNBUFFERED=1
+# Cloud Run inyecta PORT=8080; Flask debe escuchar en ese puerto
+ENV PORT=5000
+
+EXPOSE 5000
+
+# Leer PORT de la variable de entorno para que Cloud Run pueda controlarlo
+CMD ["sh", "-c", "python api_server.py"]
