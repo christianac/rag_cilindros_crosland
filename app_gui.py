@@ -74,79 +74,20 @@ class _ApiClient:
     def _encode(self, file_bytes: bytes) -> str:
         return base64.b64encode(file_bytes).decode("utf-8")
 
-    def _record_debug(self, method: str, full_url: str,
-                      body: Optional[Dict[str, Any]] = None,
-                      response: Optional[Dict[str, Any]] = None,
-                      status_code: int = 0,
-                      error: Optional[str] = None) -> None:
-        """Guarda el último request/response en session_state para el panel de debug."""
-        try:
-            import streamlit as st
-            # Hacer el body más legible: no incluir el base64 gigante
-            body_display = None
-            if body:
-                body_display = {k: ("<base64 image>" if k == "image_data" else v)
-                                for k, v in body.items()}
-            entry = {
-                "timestamp":   datetime.now().isoformat(timespec="seconds"),
-                "method":      method,
-                "url":         full_url,
-                "status_code": status_code,
-                "body":        body_display,
-                "response":    response,
-                "error":       error,
-            }
-            if "debug_log" not in st.session_state:
-                st.session_state["debug_log"] = []
-            st.session_state["debug_log"].append(entry)
-            # Mantener solo los últimos 20
-            st.session_state["debug_log"] = st.session_state["debug_log"][-20:]
-        except Exception:
-            # Si Streamlit no está disponible (modo script), ignorar
-            pass
-
     def _get(self, path: str) -> Dict[str, Any]:
-        full_url = f"{self.url}{path}"
-        try:
-            r = requests.get(full_url, timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            self._record_debug("GET", full_url,
-                               body=None, response=data,
-                               status_code=r.status_code)
-            return data
-        except Exception as e:
-            self._record_debug("GET", full_url,
-                               body=None, response=None,
-                               status_code=0, error=str(e))
-            raise
+        r = requests.get(f"{self.url}{path}", timeout=60)
+        r.raise_for_status()
+        return r.json()
 
     def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        full_url = f"{self.url}{path}"
-        try:
-            r = requests.post(full_url, json=body, timeout=120)
-            if r.status_code >= 400:
-                try:
-                    err = r.json()
-                except Exception:
-                    err = {"error": r.text}
-                self._record_debug("POST", full_url,
-                                   body=body, response=err,
-                                   status_code=r.status_code,
-                                   error=str(err.get("error", err)))
-                raise RuntimeError(err.get("error") or err)
-            data = r.json()
-            self._record_debug("POST", full_url,
-                               body=body, response=data,
-                               status_code=r.status_code)
-            return data
-        except RuntimeError:
-            raise
-        except Exception as e:
-            self._record_debug("POST", full_url,
-                               body=body, response=None,
-                               status_code=0, error=str(e))
-            raise
+        r = requests.post(f"{self.url}{path}", json=body, timeout=120)
+        if r.status_code >= 400:
+            try:
+                err = r.json()
+            except Exception:
+                err = {"error": r.text}
+            raise RuntimeError(err.get("error") or err)
+        return r.json()
 
     def health(self)   -> Dict[str, Any]: return self._get("/health")
     def stats(self)    -> Dict[str, Any]: return self._get("/stats")["stats"]
@@ -155,14 +96,11 @@ class _ApiClient:
                system_instruction: Optional[str] = None,
                user_prompt: Optional[str] = None,
                reason: Optional[str] = None,
-               temperature: Optional[float] = None,
-               expected_code: Optional[str] = None,
-               training_type: str = "cylinder") -> Dict[str, Any]:
+               temperature: Optional[float] = None) -> Dict[str, Any]:
         body = {
             "image_data":         self._encode(file_bytes),
             "cylinder_condition": condition,
             "confidence_score":   confidence,
-            "training_type":      training_type,
             "source_info":        {"source": "gui", "verified": verified},
         }
         if system_instruction:
@@ -173,8 +111,6 @@ class _ApiClient:
             body["reason"] = reason
         if temperature is not None:
             body["temperature"] = temperature
-        if expected_code:
-            body["expected_code"] = expected_code
         return self._post("/process-image", body)
 
     def classify(self, file_bytes: bytes, threshold: float,
@@ -216,34 +152,8 @@ class _DirectClient:
         self.proc = proc
         self.kind = "direct"
 
-    def _record_debug(self, label: str, body: Optional[Dict[str, Any]] = None,
-                      response: Optional[Dict[str, Any]] = None,
-                      error: Optional[str] = None) -> None:
-        """En modo directo no hay URL real, registramos el endpoint 'simulado'."""
-        try:
-            import streamlit as st
-            body_display = None
-            if body:
-                body_display = {k: ("<PIL image>" if k == "image_data" else v)
-                                for k, v in body.items()}
-            entry = {
-                "timestamp":   datetime.now().isoformat(timespec="seconds"),
-                "method":      "DIRECT",
-                "url":         f"[direct] {label}",
-                "status_code": 200 if response else 0,
-                "body":        body_display,
-                "response":    response,
-                "error":       error,
-            }
-            if "debug_log" not in st.session_state:
-                st.session_state["debug_log"] = []
-            st.session_state["debug_log"].append(entry)
-            st.session_state["debug_log"] = st.session_state["debug_log"][-20:]
-        except Exception:
-            pass
-
     def health(self) -> Dict[str, Any]:
-        result = {
+        return {
             "status": "healthy",
             "config": {
                 "qdrant_type":     "cloud" if self.proc.qdrant_cloud_url else "local",
@@ -253,12 +163,10 @@ class _DirectClient:
                 "sdk":             "google-genai",
             }
         }
-        self._record_debug("health", response=result)
-        return result
 
     def stats(self) -> Dict[str, Any]:
         info = self.proc.qdrant_client.get_collection(self.proc.collection_name)
-        result = {
+        return {
             "total_images":    info.points_count,
             "vector_size":     info.config.params.vectors.size,
             "distance":        str(info.config.params.vectors.distance),
@@ -268,68 +176,36 @@ class _DirectClient:
             "vision_model":    self.proc.vision_model_id,
             "sdk":             "google-genai",
         }
-        self._record_debug("stats", response=result)
-        return result
 
     def upload(self, file_bytes: bytes, condition: str,
                confidence: float, verified: bool,
                system_instruction: Optional[str] = None,
                user_prompt: Optional[str] = None,
                reason: Optional[str] = None,
-               temperature: Optional[float] = None,
-               expected_code: Optional[str] = None,
-               training_type: str = "cylinder") -> Dict[str, Any]:
+               temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        try:
-            result = self.proc.upload_image(
-                image=pil, cylinder_condition=condition,
-                confidence_score=confidence, source="gui", verified=verified,
-                system_instruction=system_instruction,
-                user_prompt=user_prompt,
-                reason=reason,
-                temperature=temperature,
-                expected_code=expected_code,
-                training_type=training_type,
-            )
-            self._record_debug(
-                "upload",
-                body={"training_type": training_type,
-                      "cylinder_condition": condition,
-                      "confidence_score": confidence,
-                      "expected_code": expected_code,
-                      "reason": reason,
-                      "temperature": temperature,
-                      "system_instruction": system_instruction},
-                response={"success": True, **result},
-            )
-            return {"success": True, **result}
-        except Exception as e:
-            self._record_debug("upload", error=str(e))
-            raise
+        pid = self.proc.upload_image(
+            image=pil, cylinder_condition=condition,
+            confidence_score=confidence, source="gui", verified=verified,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
+            reason=reason,
+            temperature=temperature,
+        )
+        return {"success": True, "point_id": pid}
 
     def classify(self, file_bytes: bytes, threshold: float,
                  system_instruction: Optional[str] = None,
                  user_prompt: Optional[str] = None,
                  temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        try:
-            result = self.proc.classify_cylinder(
-                image=pil, confidence_threshold=threshold,
-                system_instruction=system_instruction,
-                user_prompt=user_prompt,
-                temperature=temperature,
-            )
-            self._record_debug(
-                "classify",
-                body={"confidence_threshold": threshold,
-                      "temperature": temperature,
-                      "system_instruction": system_instruction},
-                response={"success": True, "classification": result},
-            )
-            return {"success": True, "classification": result}
-        except Exception as e:
-            self._record_debug("classify", error=str(e))
-            raise
+        result = self.proc.classify_cylinder(
+            image=pil, confidence_threshold=threshold,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
+            temperature=temperature,
+        )
+        return {"success": True, "classification": result}
 
     def search(self, file_bytes: bytes, limit: int,
                threshold: float, filter_cond: Optional[str],
@@ -337,31 +213,14 @@ class _DirectClient:
                user_prompt: Optional[str] = None,
                temperature: Optional[float] = None) -> Dict[str, Any]:
         pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        try:
-            hits = self.proc.search_similar_images(
-                query_image=pil, limit=limit,
-                score_threshold=threshold, filter_condition=filter_cond,
-                system_instruction=system_instruction,
-                user_prompt=user_prompt,
-                temperature=temperature,
-            )
-            self._record_debug(
-                "search",
-                body={"limit": limit, "score_threshold": threshold,
-                      "filter_condition": filter_cond,
-                      "system_instruction": system_instruction,
-                      "temperature": temperature},
-                response={"success": True,
-                          "count": len(hits),
-                          "similar_images": [
-                              {"id": h["id"], "score": h["score"],
-                               "condition": h["metadata"].get("cylinder_condition")}
-                              for h in hits[:5]]},
-            )
-            return {"success": True, "similar_images": hits, "count": len(hits)}
-        except Exception as e:
-            self._record_debug("search", error=str(e))
-            raise
+        hits = self.proc.search_similar_images(
+            query_image=pil, limit=limit,
+            score_threshold=threshold, filter_condition=filter_cond,
+            system_instruction=system_instruction,
+            user_prompt=user_prompt,
+            temperature=temperature,
+        )
+        return {"success": True, "similar_images": hits, "count": len(hits)}
 
 
 # ── Estilos CSS ──────────────────────────────────────────────────────────────
@@ -464,24 +323,6 @@ def page_upload():
     st.title("📤 Subir imagen de entrenamiento")
     st.caption("Sube una imagen etiquetada para entrenar el sistema RAG")
 
-    # ── Tipo de entrenamiento (FUERA del form) ──────────────────────────────
-    training_type = st.radio(
-        "🎯 Tipo de entrenamiento",
-        options=["cylinder", "character"],
-        format_func=lambda x: (
-            "🛢️ Cilindro completo (clasificación correct/dented)"
-            if x == "cylinder"
-            else "🔤 Carácter individual (entrenar OCR — letra vs número)"
-        ),
-        horizontal=True,
-        key="upload_training_type",
-        help=(
-            "Cilindro completo: sube el cilindro entero con etiqueta de condición. "
-            "Carácter individual: sube UNA letra o número recortado para enseñarle "
-            "a Gemini a distinguir letras de números (ej: D vs 0, I vs 1, B vs 8)."
-        ),
-    )
-
     # ── System instruction (FUERA del form) ─────────────────────────────────
     with st.expander("🧠 System instruction (opcional)", expanded=False):
         preset = st.selectbox(
@@ -512,34 +353,19 @@ def page_upload():
 
         temperature_upload = st.slider(
             "Temperatura Gemini",
-            min_value=0.0, max_value=1.0,
-            value=0.0 if training_type == "character" else 0.2,
-            step=0.05,
+            min_value=0.0, max_value=1.0, value=0.2, step=0.05,
             key="upload_temperature",
-            help=(
-                "Para OCR (carácter) usa 0.0 = máximo determinismo. "
-                "Para cilindro completo 0.2 es adecuado."
-            ),
         )
 
     col_form, col_preview = st.columns([1, 1])
 
     with col_form:
         with st.form("upload_form", clear_on_submit=True):
-            if training_type == "cylinder":
-                condition = st.selectbox(
-                    "Condición del cilindro *",
-                    options=VALID_CONDITIONS,
-                    format_func=lambda x: CONDITION_LABELS[x],
-                )
-            else:
-                # Para OCR, la condición no importa, forzamos 'correct'
-                # porque solo usamos este registro para entrenar la lectura
-                condition = "correct"
-                st.info(
-                    "🔤 Modo OCR — el registro se guarda con condición "
-                    "'correct' porque solo se usa para entrenar lectura."
-                )
+            condition = st.selectbox(
+                "Condición del cilindro *",
+                options=VALID_CONDITIONS,
+                format_func=lambda x: CONDITION_LABELS[x],
+            )
 
             confidence = st.slider(
                 "Confianza de la etiqueta",
@@ -553,65 +379,38 @@ def page_upload():
                 help="Marca si un humano revisó esta etiqueta",
             )
 
-            # ── Código esperado (CRÍTICO para OCR) ────────────────────────
-            if training_type == "character":
-                expected_code = st.text_input(
-                    "🔤 ¿Qué carácter estás entrenando? *",
-                    max_chars=10,
-                    placeholder="D, 0, I, 1, B, 8, RJCD, etc.",
-                    help="Letra o número que se ve en la imagen recortada",
-                )
-                default_reason = f"Referencia OCR para carácter '{expected_code}'"
-            else:
-                expected_code = st.text_input(
-                    "🔢 Código serial esperado (opcional)",
-                    placeholder="Ej: RJCD-2045-UTB.THK.9.0",
-                    help=(
-                        "Si conoces el código real del cilindro, ingrésalo. "
-                        "El sistema valida si Gemini lo lee correctamente."
-                    ),
-                )
-                default_reason = ""
-
-            # ── Razón ─────────────────────────────────────────────────────
+            # ── Razón (CRÍTICO para falsos positivos / falsos negativos) ───
             reason = st.text_area(
-                "📝 Razón / justificación",
-                value=st.session_state.get("upload_reason", default_reason),
+                "📝 Razón / justificación de la etiqueta",
+                value=st.session_state.get("upload_reason", ""),
                 height=100,
                 key="upload_reason",
                 placeholder=(
                     "Ejemplos:\n"
-                    "• 'Referencia letra D troquelada Crosland'\n"
-                    "• 'Referencia número 0 industrial con diagonal interna'\n"
-                    "• 'Estampado confundido con abolladura → falso positivo'\n"
-                    "• 'Abolladura real en zona superior izquierda, ~3cm'"
+                    "• 'Estampado confundido con abolladura → es falso positivo'\n"
+                    "• 'Marca de fábrica, NO es daño'\n"
+                    "• 'Abolladura real en zona superior izquierda, ~3cm'\n"
+                    "• 'Cilindro en buen estado, superficie íntegra'"
                 ),
                 help=(
-                    "Esta razón se inyecta en el contexto RAG al clasificar "
-                    "imágenes similares. Clave para falsos positivos/negativos "
-                    "y para enseñar caracteres conflictivos."
+                    "Esta razón se guarda como metadata y se inyecta en el "
+                    "contexto RAG al clasificar imágenes similares. Es "
+                    "CLAVE para corregir falsos positivos y falsos negativos."
                 ),
             )
 
             uploaded = st.file_uploader(
-                "Imagen *",
+                "Imagen del cilindro *",
                 type=["jpg", "jpeg", "png", "bmp", "webp"],
-                help=(
-                    "Si es carácter: sube una imagen recortada del carácter. "
-                    "Si es cilindro: sube la imagen completa."
-                ),
             )
 
-            submitted = st.form_submit_button(
-                ("📤 Subir carácter" if training_type == "character"
-                 else "📤 Subir cilindro"),
-                type="primary", use_container_width=True,
-            )
+            submitted = st.form_submit_button("📤 Subir imagen", type="primary",
+                                              use_container_width=True)
 
     with col_preview:
         st.markdown("### 👁️ Vista previa")
         if uploaded is None:
-            st.info("👈 Selecciona una imagen")
+            st.info("👈 Selecciona una imagen para ver la vista previa aquí")
         else:
             st.image(uploaded, caption=uploaded.name, use_container_width=True)
             st.caption(f"Tamaño: {uploaded.size / 1024:.1f} KB · "
@@ -621,10 +420,6 @@ def page_upload():
         if uploaded is None:
             st.error("❌ Debes seleccionar una imagen")
             return
-        if training_type == "character" and not expected_code:
-            st.error("❌ Para entrenar un carácter debes indicar cuál es "
-                     "(campo '¿Qué carácter estás entrenando?')")
-            return
         try:
             with st.spinner("⏳ Procesando con Gemini y almacenando en Qdrant…"):
                 t0 = time.time()
@@ -633,71 +428,24 @@ def page_upload():
                     system_instruction=sys_instr_upload if sys_instr_upload else None,
                     reason=reason.strip() if reason else None,
                     temperature=temperature_upload,
-                    expected_code=expected_code.strip() if expected_code else None,
-                    training_type=training_type,
                 )
                 dt = time.time() - t0
 
-            # ── Mostrar resultado ────────────────────────────────────────
-            training_label = (
-                "🔤 Carácter OCR" if training_type == "character"
-                else "🛢️ Cilindro completo"
-            )
-            st.success(f"✅ {training_label} guardado correctamente en {dt:.1f}s")
+            st.success(f"✅ Imagen subida correctamente en {dt:.1f}s")
             st.markdown(f"""
                 <div class="match-card">
                     <div class="score">🆔 {data.get('point_id', '—')}</div>
                     <div style="margin-top:0.5rem;">
-                        <span class="condition-pill" style="background:#3b82f6;">
-                            {training_label}
+                        <span class="condition-pill" style="background:{CONDITION_COLORS[condition]};">
+                            {CONDITION_LABELS[condition]}
                         </span>
                         <span style="margin-left:1rem; color:#94a3b8;">
                             Confianza: {confidence:.0%}
                         </span>
                     </div>
+                    {f'<div style="margin-top:0.5rem; color:#94a3b8; font-size:0.9rem;">📝 {reason}</div>' if reason else ''}
                 </div>
             """, unsafe_allow_html=True)
-
-            # Mostrar código OCR extraído
-            extracted = data.get("extracted_code", "")
-            code_match = data.get("code_match")
-
-            if training_type == "character":
-                # En OCR es CRÍTICO ver si leyó bien
-                st.markdown("#### 🔍 Resultado OCR")
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric("Carácter esperado", expected_code)
-                with c2:
-                    st.metric("Gemini leyó", extracted or "(nada)")
-                with c3:
-                    if code_match is True:
-                        st.success("✅ Match")
-                    elif code_match is False:
-                        st.error("❌ Diferente")
-                    else:
-                        st.warning("—")
-
-                if code_match is False:
-                    st.warning(
-                        f"⚠️ Gemini leyó **{extracted}** pero lo esperado "
-                        f"era **{expected_code}**. Sube otra imagen con "
-                        f"mejor enfoque o corrige el prompt."
-                    )
-            else:
-                # Cilindro: mostrar código extraído como referencia
-                if extracted:
-                    st.info(f"🔢 Código OCR extraído: **{extracted}**")
-                    if expected_code:
-                        if code_match is True:
-                            st.success("✅ Coincide con el código esperado")
-                        elif code_match is False:
-                            st.warning(
-                                f"⚠️ Gemini leyó **{extracted}** pero el código "
-                                f"esperado era **{expected_code}**"
-                            )
-                if reason:
-                    st.caption(f"📝 {reason}")
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
@@ -838,6 +586,30 @@ def page_classify():
                 )
                 dt = time.time() - t0
             render_classification(data, dt)
+
+            # ── Debug crudo (URL + body + response) ──────────────────────
+            with st.expander("🔧 Debug — request/response crudos", expanded=False):
+                # Detectar la URL según el modo de operación
+                if isinstance(client, _ApiClient):
+                    endpoint = f"{client.url}/classify-image"
+                    st.markdown(f"**Endpoint:** `{endpoint}`")
+                    st.markdown("**Body enviado:**")
+                    st.json({
+                        "image_data":           "<base64 omitido>",
+                        "confidence_threshold":  threshold,
+                        "system_instruction":    sys_instr if sys_instr else None,
+                        "temperature":           temperature,
+                    })
+                else:
+                    st.markdown("**Endpoint:** _(modo directo — sin HTTP)_")
+                    st.markdown("**Parámetros internos:**")
+                    st.json({
+                        "confidence_threshold":  threshold,
+                        "system_instruction":    sys_instr if sys_instr else None,
+                        "temperature":           temperature,
+                    })
+                st.markdown("**Response recibida:**")
+                st.json(data)
         except Exception as e:
             st.error(f"❌ Error: {e}")
 
@@ -851,8 +623,6 @@ def render_classification(data: Dict[str, Any], dt: float):
     cond = cls["predicted_condition"]
     conf = cls["confidence"]
     is_conf = cls["is_confident"]
-    extracted_code = cls.get("extracted_code", "")
-    confidence_ocr = cls.get("confidence_ocr", 0.0)
 
     st.markdown(f"""
         <div class="match-card">
@@ -869,19 +639,6 @@ def render_classification(data: Dict[str, Any], dt: float):
             </div>
         </div>
     """, unsafe_allow_html=True)
-
-    # ── Código OCR extraído (destacado) ───────────────────────────────────
-    if extracted_code:
-        st.markdown("### 🔢 Código serial extraído por OCR")
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            st.code(extracted_code, language="text")
-        with c2:
-            st.metric("Confianza OCR", f"{confidence_ocr:.0%}")
-        with c3:
-            st.metric("Longitud", f"{len(extracted_code)} chars")
-    else:
-        st.warning("⚠️ Gemini no detectó un código serial en esta imagen.")
 
     c1, c2 = st.columns(2)
 
@@ -1100,100 +857,6 @@ def page_status():
     """)
 
 
-# ── Panel de debug (URL / body / respuesta de la API) ────────────────────────
-
-def render_debug_panel() -> None:
-    """
-    Muestra al final de cada página el último request/response hecho a la API.
-    Usa session_state["debug_log"] donde los clientes van guardando cada llamada.
-    """
-    log = st.session_state.get("debug_log", [])
-    if not log:
-        st.markdown(
-            "<div style='text-align:center; color:#64748b; padding:1rem;'>"
-            "🔍 Aún no se han hecho llamadas a la API en esta sesión"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        return
-
-    st.markdown("---")
-    st.markdown("## 🔧 Panel de debug — Llamadas a la API")
-    st.caption(f"Mostrando las últimas **{len(log)}** llamadas (máx. 20)")
-
-    # Selector: ver una llamada específica o todas
-    options = [
-        f"#{i+1}  {e['timestamp']}  {e['method']}  {e['url']}"
-        for i, e in enumerate(reversed(log))
-    ]
-    # El primero en options es el más reciente
-    selected = st.selectbox(
-        "Selecciona una llamada para inspeccionar",
-        options=options,
-        index=0,
-        key=f"debug_select_{page}",
-    )
-
-    # Recuperar la entrada seleccionada
-    idx = len(log) - options.index(selected) - 1
-    entry = log[idx]
-
-    # Cabecera con método, URL y status
-    status_color = "#10b981" if 200 <= entry["status_code"] < 300 else (
-        "#f59e0b" if entry["status_code"] == 0 else "#ef4444"
-    )
-    status_text = (
-        f"HTTP {entry['status_code']}" if entry["status_code"]
-        else ("⚠ Error" if entry["error"] else "—")
-    )
-    st.markdown(f"""
-        <div style="background:#0f172a; padding:1rem; border-radius:0.5rem;
-                    border:1px solid #1e293b; margin-bottom:1rem;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <code style="color:#60a5fa; font-size:1.05rem;">
-                    {entry['method']} {entry['url']}
-                </code>
-                <span style="background:{status_color}; color:white;
-                             padding:0.2rem 0.7rem; border-radius:0.3rem;
-                             font-weight:600;">
-                    {status_text}
-                </span>
-            </div>
-            <div style="margin-top:0.4rem; color:#94a3b8; font-size:0.85rem;">
-                🕐 {entry['timestamp']}
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Tabs: Body / Response / Error
-    tab_body, tab_resp, tab_error = st.tabs(
-        ["📤 Body (request)", "📥 Response", "⚠️ Error"]
-    )
-
-    with tab_body:
-        if entry["body"]:
-            st.json(entry["body"])
-        else:
-            st.info("Esta llamada no envió body (GET o request vacío)")
-
-    with tab_resp:
-        if entry["response"] is not None:
-            st.json(entry["response"])
-        else:
-            st.info("Sin respuesta registrada")
-
-    with tab_error:
-        if entry["error"]:
-            st.error(entry["error"])
-        else:
-            st.success("Sin errores")
-
-    # Botón para limpiar el log
-    if st.button("🗑️ Limpiar log de debug", key=f"clear_debug_{page}"):
-        st.session_state["debug_log"] = []
-        st.rerun()
-
-
 # ── Router ───────────────────────────────────────────────────────────────────
 
 PAGES = {
@@ -1206,6 +869,3 @@ PAGES = {
 }
 
 PAGES[page]()
-
-# Panel de debug al final de cualquier página
-render_debug_panel()
