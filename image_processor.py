@@ -11,7 +11,7 @@ import base64
 import uuid
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple, Any
 from PIL import Image
 import numpy as np
 from qdrant_client import QdrantClient
