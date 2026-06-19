@@ -63,9 +63,8 @@ def health_check():
         "config": config_info,
         "endpoints": [
             "/process-image",
-            "/classify-image",
+            "/classify-image", 
             "/search-similar",
-            "/extract-code",
             "/stats",
             "/health"
         ]
@@ -115,7 +114,6 @@ def process_image():
         user_prompt = data.get("user_prompt")  # opcional
         reason = data.get("reason")  # opcional: razon del falso positivo/negativo
         temperature = data.get("temperature")  # opcional: default 0.2
-        expected_code = data.get("expected_code")  # opcional: codigo serial esperado
 
         # Decodificar imagen base64
         try:
@@ -125,8 +123,8 @@ def process_image():
         except Exception as e:
             return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
 
-        # Subir imagen usando Gemini (upload_image ahora devuelve dict)
-        result = processor.upload_image(
+        # Subir imagen usando Gemini
+        point_id = processor.upload_image(
             image=image_bytes,
             cylinder_condition=cylinder_condition,
             confidence_score=confidence_score,
@@ -137,17 +135,14 @@ def process_image():
             user_prompt=user_prompt,
             reason=reason,
             temperature=temperature,
-            expected_code=expected_code,
         )
-
-        logger.info(f"Imagen procesada con Gemini exitosamente: {result['point_id']}")
-
+        
+        logger.info(f"Imagen procesada con Gemini exitosamente: {point_id}")
+        
         return jsonify({
-            "success":         True,
-            "point_id":        result["point_id"],
-            "extracted_code":  result["extracted_code"],
-            "code_match":      result["code_match"],  # True/False/None
-            "message":         "Imagen procesada y almacenada exitosamente con Gemini",
+            "success": True,
+            "point_id": point_id,
+            "message": "Imagen procesada y almacenada exitosamente con Gemini",
             "cylinder_condition": cylinder_condition,
             "confidence_score": confidence_score,
             "embedding_model": processor.embedding_model,
@@ -273,69 +268,6 @@ def search_similar():
         
     except Exception as e:
         logger.error(f"Error buscando imágenes similares: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/extract-code', methods=['POST'])
-def extract_code():
-    """
-    Extraer el código serial del cilindro mediante OCR con Gemini.
-    No almacena nada en Qdrant — solo lee y devuelve el código detectado.
-
-    Body JSON:
-    {
-        "image_data": "base64_encoded_image",
-        "system_instruction": "opcional, prompt para guiar la lectura",
-        "temperature": 0.0-1.0 (default 0.0 = max determinismo para OCR)
-    }
-
-    Response:
-    {
-        "success": true,
-        "extracted_code": "RJCD-2045-UTB.THK.9.0",
-        "confidence_ocr": 0.92,
-        "description": "descripción técnica de la imagen"
-    }
-    """
-    try:
-        if processor is None:
-            return jsonify({"success": False, "error": "Procesador no disponible"}), 500
-
-        data = request.get_json()
-        if not data or "image_data" not in data:
-            return jsonify({"success": False, "error": "Campo image_data requerido"}), 400
-
-        image_data = data["image_data"]
-        system_instruction = data.get("system_instruction")
-        # Por defecto temperatura 0 para OCR (máxima precisión)
-        temperature = data.get("temperature", 0.0)
-
-        try:
-            if image_data.startswith('data:'):
-                image_data = image_data.split(',')[1]
-            image_bytes = base64.b64decode(image_data)
-        except Exception as e:
-            return jsonify({"success": False, "error": f"Error decodificando imagen: {e}"}), 400
-
-        # OCR dedicado (no clasifica, no almacena)
-        info = processor.get_image_description(
-            image=image_bytes,
-            system_instruction=system_instruction,
-            temperature=temperature,
-            extract_code=True,
-        )
-
-        logger.info(f"OCR: código extraído='{info['extracted_code']}' "
-                    f"(confianza={info['confidence_ocr']:.0%})")
-
-        return jsonify({
-            "success":         True,
-            "extracted_code":  info["extracted_code"],
-            "confidence_ocr":  info["confidence_ocr"],
-            "description":     info["description"],
-        })
-
-    except Exception as e:
-        logger.error(f"Error extrayendo código: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/stats', methods=['GET'])
