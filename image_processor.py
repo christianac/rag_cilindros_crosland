@@ -54,21 +54,30 @@ class CylinderImageProcessor:
         self.embedding_model  = EMBEDDING_MODEL
         self.vision_model_id  = VISION_MODEL
 
-        # ── Gemini client (nueva SDK) ──────────────────────────────────────
+        # ── Gemini clients (nueva SDK) ────────────────────────────────────
+        # IMPORTANTE: Esta API key requiere v1 para embeddings y v1beta para
+        # generateContent (systemInstruction no existe en v1).
+        # Por eso usamos DOS clientes separados.
         api_key = gemini_api_key or os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError(
                 "GEMINI_API_KEY es requerido. "
                 "Obtén una en https://aistudio.google.com/app/apikey"
             )
-        # http_options fuerza v1 en lugar de v1beta para mayor compatibilidad
+
+        # Cliente v1 → usado para embedContent (embeddings)
         self.client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(api_version="v1")
         )
-        logger.info(f"Cliente Gemini inicializado | visión: {VISION_MODEL} | "
+        # Cliente v1beta → usado para generateContent (vision + system_instruction)
+        self.client_v1beta = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(api_version="v1beta")
+        )
+        logger.info(f"Clientes Gemini inicializados | visión: {VISION_MODEL} | "
                     f"embeddings: {EMBEDDING_MODEL} ({EMBEDDING_DIM}d) | "
-                    f"SDK: google-genai v2 | API: v1")
+                    f"SDK: google-genai v2 | v1 (embed) + v1beta (vision)")
 
         # ── Qdrant (priorizar Cloud) ───────────────────────────────────────
         self.qdrant_cloud_url = qdrant_cloud_url or os.getenv("QDRANT_CLOUD_URL")
@@ -161,9 +170,8 @@ class CylinderImageProcessor:
             sys_instr = system_instruction or self.DEFAULT_SYSTEM_INSTRUCTION
             usr_prmpt = user_prompt or self.DEFAULT_USER_PROMPT
 
-            # Nueva SDK: client.models.generate_content()
-            # system_instruction va como config; user_prompt + imagen como contents
-            response = self.client.models.generate_content(
+            # generateContent requiere v1beta para soportar systemInstruction
+            response = self.client_v1beta.models.generate_content(
                 model=self.vision_model_id,
                 contents=[
                     types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
@@ -424,7 +432,8 @@ class CylinderImageProcessor:
         )
 
         try:
-            rag_response = self.client.models.generate_content(
+            # generateContent con systemInstruction requiere v1beta
+            rag_response = self.client_v1beta.models.generate_content(
                 model=self.vision_model_id,
                 contents=rag_prompt,
                 config=types.GenerateContentConfig(
