@@ -1,11 +1,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Dockerfile.gui — Servicio Streamlit (Interfaz gráfica)
-# Cloud Run: rag-gui
-# Puerto: 8501 (Cloud Run lo mapea al 8080 externo)
+# Dockerfile.gui — Servicio Streamlit (Interfaz gráfica) para Cloud Run
 #
-# Requiere variable de entorno:
-#   API_URL → URL pública del servicio rag-api en Cloud Run
-#   Ejemplo: https://rag-api-xxxx-uc.a.run.app
+# IMPORTANTE: Cloud Run SIEMPRE expone el contenedor en PORT=8080
+# y le inyecta la variable PORT al proceso. NO usar ENV PORT en el Dockerfile.
 # ─────────────────────────────────────────────────────────────────────────────
 
 FROM python:3.11-slim
@@ -30,13 +27,14 @@ RUN mkdir -p /root/.streamlit
 COPY deploy/streamlit_config.toml /root/.streamlit/config.toml
 
 ENV PYTHONUNBUFFERED=1
+# NO fijamos PORT — Cloud Run lo inyecta como 8080
 
-EXPOSE 8501
+EXPOSE 8080
 
-# Cloud Run espera que el proceso escuche en $PORT (8080)
-# Streamlit debe escuchar en ese puerto
-CMD ["sh", "-c", "python -m streamlit run app_gui.py \
-    --server.port=${PORT:-8501} \
+# Cloud Run espera escuchar en $PORT (siempre 8080)
+# Streamlit debe usar ESE puerto
+CMD ["sh", "-c", "echo \"Starting Streamlit on PORT=$PORT\" && python -m streamlit run app_gui.py \
+    --server.port=${PORT} \
     --server.address=0.0.0.0 \
     --server.headless=true \
     --server.enableCORS=false \

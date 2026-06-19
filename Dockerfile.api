@@ -1,7 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Dockerfile.api — Servicio Flask (RAG API)
-# Cloud Run: rag-api
-# Puerto: 5000 (Cloud Run lo mapea al 8080 externo)
+# Dockerfile.api — Servicio Flask (RAG API) para Cloud Run
+#
+# IMPORTANTE: Cloud Run SIEMPRE expone el contenedor en PORT=8080
+# y le inyecta la variable PORT al proceso. NO usar ENV PORT en el Dockerfile
+# porque eso sobrescribe el valor de Cloud Run.
 # ─────────────────────────────────────────────────────────────────────────────
 
 FROM python:3.11-slim
@@ -24,10 +26,10 @@ COPY image_processor.py .
 COPY qdrant_setup.py .
 
 ENV PYTHONUNBUFFERED=1
-# Cloud Run inyecta PORT=8080; Flask debe escuchar en ese puerto
-ENV PORT=5000
+# NO fijamos PORT aquí — Cloud Run inyecta PORT=8080 en runtime
 
-EXPOSE 5000
+# Cloud Run espera escuchar en $PORT (siempre 8080)
+EXPOSE 8080
 
-# Leer PORT de la variable de entorno para que Cloud Run pueda controlarlo
-CMD ["sh", "-c", "python api_server.py"]
+# El CMD usa $PORT directamente (inyectado por Cloud Run)
+CMD ["sh", "-c", "echo \"Starting API on PORT=$PORT\" && python api_server.py"]

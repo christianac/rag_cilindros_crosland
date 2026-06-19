@@ -55,17 +55,21 @@ steps:
       - --region=${_REGION}
       - --platform=managed
       - --allow-unauthenticated
-      - --port=5000
+      # Cloud Run SIEMPRE usa 8080 — el contenedor debe escuchar ahí
+      - --port=8080
       - --memory=2Gi
       - --cpu=2
       - --timeout=300
       - --concurrency=80
       - --min-instances=0
       - --max-instances=10
+      # Timeout más generoso para el primer arranque (carga el modelo Gemini)
+      - --startup-probe-timeout=240s
+      - --startup-probe-period=10s
       - --set-secrets=GEMINI_API_KEY=GEMINI_API_KEY:latest
       - --set-secrets=QDRANT_CLOUD_URL=QDRANT_CLOUD_URL:latest
       - --set-secrets=QDRANT_API_KEY=QDRANT_API_KEY:latest
-      - --set-env-vars=PYTHONUNBUFFERED=1
+      - --set-env-vars=PYTHONUNBUFFERED=1,API_HOST=0.0.0.0
     waitFor: [push-api]
 
   # ════════════════════════════════════════════════════════════
@@ -121,13 +125,17 @@ steps:
           --region=${_REGION} \
           --platform=managed \
           --allow-unauthenticated \
-          --port=8501 \
+          # Cloud Run SIEMPRE usa 8080 — el contenedor debe escuchar ahí
+          --port=8080 \
           --memory=1Gi \
           --cpu=1 \
           --timeout=300 \
           --concurrency=40 \
           --min-instances=0 \
           --max-instances=5 \
+          # Timeout más generoso para el primer arranque
+          --startup-probe-timeout=240s \
+          --startup-probe-period=10s \
           --set-env-vars="API_URL=$${API_URL},PYTHONUNBUFFERED=1"
     waitFor: [push-gui, get-api-url]
 

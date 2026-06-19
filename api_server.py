@@ -310,6 +310,20 @@ def get_stats():
         logger.error(f"Error obteniendo estadísticas: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/', methods=['GET'])
+def root():
+    """Health check básico para Cloud Run"""
+    return jsonify({
+        "status":  "ok",
+        "service": "rag-api",
+        "version": "1.0",
+    })
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    """Health check para startup/liveness probe de Cloud Run"""
+    return jsonify({"status": "ok"}), 200
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({"error": "Endpoint no encontrado"}), 404
